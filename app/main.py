@@ -24,9 +24,10 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from app import contrato
+from app.painel import PAGINA_ADMIN
 from app.assinador import Assinador, assinador_do_ambiente
 from app.limite import LimitadorMemoria
 from app.repositorio import Repositorio, repositorio_do_ambiente
@@ -175,9 +176,32 @@ async def revogar_municipio(request: Request) -> dict[str, Any]:
     return {"ok": True, "codigo_ibge": ibge}
 
 
+@app.post("/admin/reativar-municipio", dependencies=[Depends(exigir_admin)])
+async def reativar_municipio(request: Request) -> dict[str, Any]:
+    corpo = await request.json()
+    ibge = str(corpo.get("codigo_ibge") or "").strip()
+    if not ibge:
+        raise HTTPException(status_code=400, detail="codigo_ibge obrigatório")
+    estado.repo.reativar_municipio(ibge)
+    _log.info("reativado municipio ibge=%s", ibge)
+    return {"ok": True, "codigo_ibge": ibge}
+
+
 @app.get("/admin/instalacoes", dependencies=[Depends(exigir_admin)])
 async def listar() -> dict[str, Any]:
     return {"ok": True, "instalacoes": estado.repo.listar_instalacoes()}
+
+
+@app.get("/admin/municipios-revogados", dependencies=[Depends(exigir_admin)])
+async def listar_municipios_revogados() -> dict[str, Any]:
+    return {"ok": True, "codigos": estado.repo.listar_municipios_revogados()}
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def painel_admin() -> HTMLResponse:
+    """Painel web de administração. A página é pública (só o formulário); as
+    ações exigem o ADMIN_TOKEN, enviado do navegador aos endpoints /admin/*."""
+    return HTMLResponse(PAGINA_ADMIN)
 
 
 # ─── Saúde ───────────────────────────────────────────────────────────────────

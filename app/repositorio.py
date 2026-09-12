@@ -27,7 +27,9 @@ class Repositorio(Protocol):
                   max_usuarios: Optional[int]) -> None: ...
     def revogar_instalacao(self, instalacao_id: str) -> bool: ...
     def revogar_municipio(self, codigo_ibge: str) -> None: ...
+    def reativar_municipio(self, codigo_ibge: str) -> None: ...
     def listar_instalacoes(self) -> list[dict[str, Any]]: ...
+    def listar_municipios_revogados(self) -> list[str]: ...
     def registrar_tentativa(self, instalacao_id: str, codigo_ibge: str,
                             status: str, quando: datetime) -> None: ...
     def pronto(self) -> bool: ...
@@ -71,8 +73,15 @@ class RepositorioMemoria:
         with self._lock:
             self._munic_revogados.add(codigo_ibge)
 
+    def reativar_municipio(self, codigo_ibge) -> None:
+        with self._lock:
+            self._munic_revogados.discard(codigo_ibge)
+
     def listar_instalacoes(self) -> list[dict[str, Any]]:
         return [dict(v) for v in self._inst.values()]
+
+    def listar_municipios_revogados(self) -> list[str]:
+        return sorted(self._munic_revogados)
 
     def registrar_tentativa(self, instalacao_id, codigo_ibge, status, quando) -> None:
         # Sem dado pessoal: só identificador de instalação, município, status, horário.
@@ -178,6 +187,14 @@ class RepositorioPostgres:
                 {"c": codigo_ibge},
             )
 
+    def reativar_municipio(self, codigo_ibge) -> None:
+        from sqlalchemy import text
+        with self._engine.begin() as con:
+            con.execute(
+                text("DELETE FROM municipios_revogados WHERE codigo_ibge = :c"),
+                {"c": codigo_ibge},
+            )
+
     def listar_instalacoes(self) -> list[dict[str, Any]]:
         from sqlalchemy import text
         with self._engine.connect() as con:
@@ -186,6 +203,14 @@ class RepositorioPostgres:
                      "FROM instalacoes ORDER BY criada_em")
             ).mappings().all()
         return [dict(r) for r in rows]
+
+    def listar_municipios_revogados(self) -> list[str]:
+        from sqlalchemy import text
+        with self._engine.connect() as con:
+            rows = con.execute(
+                text("SELECT codigo_ibge FROM municipios_revogados ORDER BY codigo_ibge")
+            ).all()
+        return [r[0] for r in rows]
 
     def registrar_tentativa(self, instalacao_id, codigo_ibge, status, quando) -> None:
         from sqlalchemy import text

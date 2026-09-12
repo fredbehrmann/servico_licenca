@@ -19,7 +19,14 @@ ponta a ponta (o serviço assina, o `licenca_cliente` do SICOF valida).
 - `GET /admin/instalacoes` — lista as autorizadas.
 - `GET /health`, `GET /ready` — vida e prontidão (chave + banco).
 
-Endpoints `/admin/*` exigem cabeçalho `Authorization: Bearer <ADMIN_TOKEN>`.
+- `GET /admin` — **painel web** de administração (página única). Cole o `ADMIN_TOKEN` e
+  gerencie pela tela: lista de instalações, autorizar/reativar, revogar instalação, e revogar/
+  reativar município. É o jeito recomendado no dia a dia; os `curl` abaixo continuam valendo para
+  automação.
+
+Endpoints `/admin/*` exigem cabeçalho `Authorization: Bearer <ADMIN_TOKEN>`. O `GET /admin`
+(a página) é público — é só o formulário; nenhum dado carrega sem o token, que fica no navegador
+e vai como cabeçalho nas chamadas. Acesse em `https://licenca.techfisco.com.br/admin`.
 
 ## Variáveis de ambiente
 
