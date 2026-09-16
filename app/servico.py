@@ -61,6 +61,15 @@ def decidir(
         resp["status"] = "instalacao_nao_autorizada"
         return resp
 
+    # A autorização pertence ao PAR instalação + município. Localizar apenas
+    # pelo instalacao_id não basta: sem esta comparação, uma instalação
+    # autorizada para um município poderia consultar como se fosse de outro.
+    # A negação é propositalmente genérica e não devolve o IBGE cadastrado,
+    # para não transformar o endpoint em mecanismo de descoberta da allowlist.
+    if str(autorizacao.get("codigo_ibge") or "") != ibge:
+        resp["status"] = "instalacao_nao_autorizada"
+        return resp
+
     resp["max_usuarios"] = autorizacao.get("max_usuarios")
     if autorizacao.get("revogada") or repo.municipio_revogado(ibge):
         resp["status"] = "revogada"

@@ -40,6 +40,32 @@ def test_nao_autorizada_tambem_vem_assinada(cliente):
     verifica_assinatura(corpo, pub)             # o "não" é assinado e confiável
 
 
+def test_mesma_instalacao_com_outro_municipio_e_recusada_sem_vazar_cadastro(cliente):
+    c, pub, _ = cliente
+    _autoriza(cliente)                          # inst-1 pertence ao IBGE 2927408
+    req_adulterada = {**_REQ, "codigo_ibge": "3550308", "nonce": "nonce-outro-ibge"}
+
+    r = c.post("/v1/consulta", json=req_adulterada)
+
+    assert r.status_code == 200
+    corpo = r.json()
+    assert corpo["status"] == "instalacao_nao_autorizada"
+    assert corpo["codigo_ibge"] == "3550308"  # vínculo da requisição continua verificável
+    assert corpo["instalacao_id"] == "inst-1"
+    assert corpo["nonce"] == "nonce-outro-ibge"
+    assert corpo["max_usuarios"] is None
+    assert "2927408" not in r.text             # não revela o município cadastrado
+    verifica_assinatura(corpo, pub)             # contrato/assinatura permanecem compatíveis
+
+    tentativas = c.get(
+        "/admin/tentativas",
+        headers={"Authorization": f"Bearer {ADMIN}"},
+    ).json()["tentativas"]
+    assert tentativas[0]["instalacao_id"] == "inst-1"
+    assert tentativas[0]["codigo_ibge"] == "3550308"
+    assert tentativas[0]["status"] == "instalacao_nao_autorizada"
+
+
 def test_campo_ausente_da_400(cliente):
     c, _, _ = cliente
     r = c.post("/v1/consulta", json={"instalacao_id": "i", "codigo_ibge": "c", "nonce": "n"})

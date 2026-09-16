@@ -33,6 +33,17 @@ def test_ativa_quando_autorizada():
     assert "assinatura" not in r          # decidir não assina
 
 
+def test_instalacao_autorizada_para_outro_municipio_nao_autoriza():
+    req_outro_ibge = {**_REQ, "codigo_ibge": "3550308"}
+    r = decidir(req_outro_ibge, _repo_com_autorizada(5), Config())
+
+    assert r["status"] == "instalacao_nao_autorizada"
+    assert r["codigo_ibge"] == "3550308"     # ecoa a requisição, não revela o cadastro
+    assert r["instalacao_id"] == "inst-1"
+    assert r["max_usuarios"] is None          # não vaza informação da autorização
+    assert r["expira_em"] is None and r["offline_ate"] is None
+
+
 def test_revogada_por_instalacao():
     repo = _repo_com_autorizada()
     repo.revogar_instalacao("inst-1")
@@ -46,6 +57,18 @@ def test_revogada_por_municipio():
     repo.revogar_municipio("2927408")
     r = decidir(_REQ, repo, Config())
     assert r["status"] == "revogada"
+
+
+def test_revogacao_municipal_nao_mascara_vinculo_incorreto():
+    repo = _repo_com_autorizada()
+    repo.revogar_municipio("2927408")
+
+    correto = decidir(_REQ, repo, Config())
+    adulterado = decidir({**_REQ, "codigo_ibge": "3550308"}, repo, Config())
+
+    assert correto["status"] == "revogada"
+    assert adulterado["status"] == "instalacao_nao_autorizada"
+    assert adulterado["max_usuarios"] is None
 
 
 def test_config_carimba_key_id_e_ambiente():

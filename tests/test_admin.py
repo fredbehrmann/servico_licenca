@@ -30,6 +30,7 @@ def test_pagina_admin_tem_logo_e_consultas(cliente):
     assert "Consultas recentes" in r.text
     assert "Administração de licenças" in r.text
     assert "data:image/png;base64," in r.text   # logo do TechFisco embutida
+    assert "<th>IBGE</th>" in r.text            # vínculo municipal visível na listagem
 
 
 def test_admin_sem_token_401(cliente):
