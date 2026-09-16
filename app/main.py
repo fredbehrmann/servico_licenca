@@ -197,6 +197,12 @@ async def listar_municipios_revogados() -> dict[str, Any]:
     return {"ok": True, "codigos": estado.repo.listar_municipios_revogados()}
 
 
+@app.get("/admin/tentativas", dependencies=[Depends(exigir_admin)])
+async def listar_tentativas(limite: int = 100) -> dict[str, Any]:
+    """Consultas recentes (quem consultou, quando, status). Sem dado pessoal."""
+    return {"ok": True, "tentativas": estado.repo.listar_tentativas(limite)}
+
+
 @app.get("/admin", response_class=HTMLResponse)
 async def painel_admin() -> HTMLResponse:
     """Painel web de administração. A página é pública (só o formulário); as

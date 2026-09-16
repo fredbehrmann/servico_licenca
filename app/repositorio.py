@@ -32,6 +32,7 @@ class Repositorio(Protocol):
     def listar_municipios_revogados(self) -> list[str]: ...
     def registrar_tentativa(self, instalacao_id: str, codigo_ibge: str,
                             status: str, quando: datetime) -> None: ...
+    def listar_tentativas(self, limite: int = 100) -> list[dict[str, Any]]: ...
     def pronto(self) -> bool: ...
 
 
@@ -89,6 +90,9 @@ class RepositorioMemoria:
             "instalacao_id": instalacao_id, "codigo_ibge": codigo_ibge,
             "status": status, "quando": quando.isoformat(),
         })
+
+    def listar_tentativas(self, limite: int = 100) -> list[dict[str, Any]]:
+        return list(reversed(self.tentativas))[: max(1, int(limite))]
 
     def pronto(self) -> bool:
         return True
@@ -220,6 +224,17 @@ class RepositorioPostgres:
                      "VALUES (:i, :c, :s, :q)"),
                 {"i": instalacao_id, "c": codigo_ibge, "s": status, "q": quando},
             )
+
+    def listar_tentativas(self, limite: int = 100) -> list[dict[str, Any]]:
+        from sqlalchemy import text
+        with self._engine.connect() as con:
+            rows = con.execute(
+                text("SELECT instalacao_id, codigo_ibge, status, quando "
+                     "FROM tentativas ORDER BY quando DESC LIMIT :n"),
+                {"n": max(1, int(limite))},
+            ).mappings().all()
+        return [{**r, "quando": r["quando"].isoformat() if hasattr(r["quando"], "isoformat")
+                 else str(r["quando"])} for r in rows]
 
     def pronto(self) -> bool:
         from sqlalchemy import text

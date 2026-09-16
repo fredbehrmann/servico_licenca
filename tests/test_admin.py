@@ -10,6 +10,28 @@ _REQ = {"instalacao_id": "inst-1", "codigo_ibge": "2927408",
 _H = {"Authorization": f"Bearer {ADMIN}"}
 
 
+def test_tentativas_sem_token_401(cliente):
+    c, _, _ = cliente
+    assert c.get("/admin/tentativas").status_code == 401
+
+
+def test_tentativas_aparecem_apos_consulta(cliente):
+    c, _, _ = cliente
+    req = {"instalacao_id": "inst-x", "codigo_ibge": "2927408", "versao_app": "1.0.0", "nonce": "n9"}
+    assert c.post("/v1/consulta", json=req).status_code == 200
+    lst = c.get("/admin/tentativas", headers=_H).json()["tentativas"]
+    assert any(t["instalacao_id"] == "inst-x" for t in lst)
+
+
+def test_pagina_admin_tem_logo_e_consultas(cliente):
+    c, _, _ = cliente
+    r = c.get("/admin")
+    assert r.status_code == 200
+    assert "Consultas recentes" in r.text
+    assert "Administração de licenças" in r.text
+    assert "data:image/png;base64," in r.text   # logo do TechFisco embutida
+
+
 def test_admin_sem_token_401(cliente):
     c, _, _ = cliente
     r = c.post("/admin/autorizar", json={"instalacao_id": "i", "codigo_ibge": "c"})
