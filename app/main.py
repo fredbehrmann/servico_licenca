@@ -142,6 +142,11 @@ def exigir_admin(authorization: str = Header(default="")) -> None:
 
 @app.post("/admin/autorizar", dependencies=[Depends(exigir_admin)])
 async def autorizar(request: Request) -> dict[str, Any]:
+    if estado.repo.migracao_legado_concluida():
+        raise HTTPException(
+            status_code=409,
+            detail="migração concluída; use uma licença contratual para novas instalações",
+        )
     corpo = await request.json()
     inst = str(corpo.get("instalacao_id") or "").strip()
     ibge = str(corpo.get("codigo_ibge") or "").strip()
@@ -216,6 +221,11 @@ async def listar_municipios_revogados() -> dict[str, Any]:
 async def listar_tentativas(limite: int = 100) -> dict[str, Any]:
     """Consultas recentes (quem consultou, quando, status). Sem dado pessoal."""
     return {"ok": True, "tentativas": estado.repo.listar_tentativas(limite)}
+
+
+@app.get("/admin/migracao-legado/status", dependencies=[Depends(exigir_admin)])
+async def status_migracao_legado() -> dict[str, Any]:
+    return {"ok": True, "concluida": estado.repo.migracao_legado_concluida()}
 
 
 # ─── Administração contratual (Etapa 3) ────────────────────────────────────

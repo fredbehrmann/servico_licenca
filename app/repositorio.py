@@ -14,6 +14,8 @@ a uma licença com vigência e limites próprios.
 
 from __future__ import annotations
 
+import copy
+import json
 import threading
 from datetime import datetime
 from typing import Any, Optional, Protocol
@@ -44,6 +46,11 @@ class Repositorio(Protocol):
                                  detalhes: str, quando: datetime) -> None: ...
     def listar_eventos_licenca(self, licenca_id: str,
                                limite: int = 100) -> list[dict[str, Any]]: ...
+    def obter_migracao_dados(self, migracao_id: str) -> Optional[dict[str, Any]]: ...
+    def migracao_legado_concluida(self) -> bool: ...
+    def aplicar_migracao_legada(self, migracao_id: str, fingerprint: str,
+                                backup_referencia: str, planos: list[dict[str, Any]],
+                                quando: datetime) -> dict[str, Any]: ...
     def pronto(self) -> bool: ...
 
 
@@ -55,6 +62,7 @@ class RepositorioMemoria:
         self._inst: dict[str, dict[str, Any]] = {}
         self._licencas: dict[str, dict[str, Any]] = {}
         self._eventos: list[dict[str, Any]] = []
+        self._migracoes_dados: dict[str, dict[str, Any]] = {}
         self._munic_revogados: set[str] = set()
         self.tentativas: list[dict[str, Any]] = []
         self._lock = threading.RLock()
@@ -154,7 +162,7 @@ class RepositorioMemoria:
                 raise ValueError(
                     "o limite não pode ser menor que a quantidade de instalações ativas"
                 )
-            self._licencas[licenca_id] = dict(dados)
+            self._licencas[licenca_id] = {**self._licencas[licenca_id], **dict(dados)}
             return dict(self._licencas[licenca_id])
 
     def associar_instalacao(self, instalacao_id: str, licenca_id: str,
@@ -206,6 +214,136 @@ class RepositorioMemoria:
         eventos = [e for e in reversed(self._eventos) if e["licenca_id"] == licenca_id]
         return [dict(e) for e in eventos[: max(1, int(limite))]]
 
+    def obter_migracao_dados(self, migracao_id: str) -> Optional[dict[str, Any]]:
+        reg = self._migracoes_dados.get(migracao_id)
+        return copy.deepcopy(reg) if reg else None
+
+    def migracao_legado_concluida(self) -> bool:
+        return any(chave.startswith("legado-v1-") for chave in self._migracoes_dados)
+
+    def aplicar_migracao_legada(self, migracao_id: str, fingerprint: str,
+                                backup_referencia: str, planos: list[dict[str, Any]],
+                                quando: datetime) -> dict[str, Any]:
+        """Converte o lote inteiro sob um único lock; erro restaura o snapshot."""
+        with self._lock:
+            anterior = self._migracoes_dados.get(migracao_id)
+            if anterior:
+                return {**copy.deepcopy(anterior["resultado"]), "repetida": True}
+            snapshot = (
+                copy.deepcopy(self._inst), copy.deepcopy(self._licencas),
+                copy.deepcopy(self._eventos), copy.deepcopy(self._migracoes_dados),
+            )
+            try:
+                total_antes = len(self._inst)
+                revogadas_antes = sum(1 for i in self._inst.values() if i.get("revogada"))
+                municipios_antes = {str(i.get("codigo_ibge") or "") for i in self._inst.values()}
+                for plano in planos:
+                    licenca = copy.deepcopy(plano["licenca"])
+                    licenca_id = str(licenca["licenca_id"])
+                    if self.municipio_revogado(str(licenca["codigo_ibge"])) != bool(
+                        plano.get("municipio_revogado_esperado")
+                    ):
+                        raise ValueError(
+                            f"revogação municipal mudou durante a migração: {licenca['codigo_ibge']}"
+                        )
+                    existente = self._licencas.get(licenca_id)
+                    if existente:
+                        if existente.get("codigo_ibge") != licenca.get("codigo_ibge"):
+                            raise ValueError(f"licença existente pertence a outro município: {licenca_id}")
+                        chave_atual = existente.get("chave_migracao")
+                        if chave_atual not in (None, licenca.get("chave_migracao")):
+                            raise ValueError(f"colisão de licença migrada: {licenca_id}")
+                        for campo in (
+                            "status", "inicio_em", "expira_em", "max_auditores",
+                            "max_instalacoes_ativas", "dias_offline", "versao_minima",
+                        ):
+                            if existente.get(campo) != licenca.get(campo):
+                                raise ValueError(
+                                    f"licença mudou durante a migração: {licenca_id} ({campo})"
+                                )
+                        existente["chave_migracao"] = licenca.get("chave_migracao")
+                        existente["migrada_em"] = licenca.get("migrada_em")
+                    else:
+                        self._licencas[licenca_id] = licenca
+                    for vinculo in plano["instalacoes"]:
+                        iid = str(vinculo["instalacao_id"])
+                        reg = self._inst.get(iid)
+                        if reg is None:
+                            raise ValueError(f"instalação desapareceu durante a migração: {iid}")
+                        if (
+                            str(reg.get("codigo_ibge") or "") != vinculo["codigo_ibge_esperado"]
+                            or bool(reg.get("revogada")) != vinculo["revogada_esperada"]
+                            or reg.get("max_usuarios") != vinculo["max_usuarios_esperado"]
+                        ):
+                            raise ValueError(f"instalação mudou durante a migração: {iid}")
+                        if reg.get("licenca_id") not in (None, licenca_id):
+                            raise ValueError(f"instalação já pertence a outra licença: {iid}")
+                        reg["licenca_id"] = licenca_id
+                        reg["status_instalacao"] = vinculo["status"]
+                        reg["ativada_em"] = quando.isoformat() if vinculo["status"] == "ativa" else None
+                        reg["revogada_em"] = (
+                            quando.isoformat() if vinculo["status"] in {"revogada", "substituida"}
+                            else None
+                        )
+                    self._eventos.append({
+                        "licenca_id": licenca_id, "acao": "migracao_legada",
+                        "detalhes": json.dumps({
+                            "migracao_id": migracao_id,
+                            "instalacoes": len(plano["instalacoes"]),
+                        }, ensure_ascii=False, sort_keys=True),
+                        "quando": quando.isoformat(),
+                    })
+                resultado = self._validar_resultado_migracao(
+                    total_antes, revogadas_antes, municipios_antes, len(planos),
+                )
+                self._migracoes_dados[migracao_id] = {
+                    "migracao_id": migracao_id, "fingerprint": fingerprint,
+                    "backup_referencia": backup_referencia, "aplicada_em": quando.isoformat(),
+                    "resultado": copy.deepcopy(resultado),
+                }
+                return resultado
+            except Exception:
+                self._inst, self._licencas, self._eventos, self._migracoes_dados = snapshot
+                raise
+
+    def _validar_resultado_migracao(self, total_antes: int, revogadas_antes: int,
+                                    municipios_antes: set[str],
+                                    licencas_migradas: int) -> dict[str, Any]:
+        total_depois = len(self._inst)
+        revogadas_depois = sum(1 for i in self._inst.values() if i.get("revogada"))
+        municipios_depois = {str(i.get("codigo_ibge") or "") for i in self._inst.values()}
+        if total_depois != total_antes:
+            raise ValueError("a quantidade total de instalações mudou durante a migração")
+        if revogadas_depois != revogadas_antes:
+            raise ValueError("a quantidade de revogações legadas mudou durante a migração")
+        if municipios_depois != municipios_antes:
+            raise ValueError("a lista de municípios mudou durante a migração")
+        if any(not i.get("licenca_id") for i in self._inst.values()):
+            raise ValueError("restaram instalações sem licença")
+        if any(i.get("status_instalacao") == "ativa" and not i.get("licenca_id")
+               for i in self._inst.values()):
+            raise ValueError("existe instalação ativa sem licença")
+        for licenca_id, licenca in self._licencas.items():
+            if licenca.get("status") == "ativa" and (
+                not licenca.get("expira_em") or not licenca.get("inicio_em")
+                or not licenca.get("max_auditores")
+            ):
+                raise ValueError(f"licença ativa incompleta: {licenca_id}")
+            if self.contar_instalacoes_ativas(licenca_id) > int(
+                licenca.get("max_instalacoes_ativas") or 1
+            ):
+                raise ValueError(f"licença acima do limite de instalações: {licenca_id}")
+        return {
+            "total_instalacoes_antes": total_antes,
+            "total_instalacoes_depois": total_depois,
+            "municipios_antes": sorted(municipios_antes),
+            "municipios_depois": sorted(municipios_depois),
+            "revogadas_antes": revogadas_antes,
+            "revogadas_depois": revogadas_depois,
+            "licencas_migradas": licencas_migradas,
+            "repetida": False,
+        }
+
     def pronto(self) -> bool:
         return True
 
@@ -228,57 +366,8 @@ class RepositorioPostgres:
         self._criar_esquema()
 
     def _criar_esquema(self) -> None:
-        from sqlalchemy import text
-        ddl = [
-            """CREATE TABLE IF NOT EXISTS licencas (
-                   licenca_id                 TEXT PRIMARY KEY,
-                   codigo_ibge                TEXT NOT NULL,
-                   status                     TEXT NOT NULL,
-                   inicio_em                  TIMESTAMPTZ NOT NULL,
-                   expira_em                  TIMESTAMPTZ NOT NULL,
-                   max_auditores              INTEGER NOT NULL,
-                   max_instalacoes_ativas     INTEGER NOT NULL DEFAULT 1,
-                   dias_offline               INTEGER NOT NULL DEFAULT 7,
-                   versao_minima              TEXT NOT NULL DEFAULT '1.0.0',
-                   criada_em                  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                   atualizada_em              TIMESTAMPTZ NOT NULL DEFAULT now()
-               )""",
-            """CREATE TABLE IF NOT EXISTS instalacoes (
-                   instalacao_id TEXT PRIMARY KEY,
-                   codigo_ibge   TEXT NOT NULL,
-                   max_usuarios  INTEGER,
-                   revogada      BOOLEAN NOT NULL DEFAULT FALSE,
-                   criada_em     TIMESTAMPTZ NOT NULL DEFAULT now()
-               )""",
-            """CREATE TABLE IF NOT EXISTS municipios_revogados (
-                   codigo_ibge TEXT PRIMARY KEY,
-                   revogado_em TIMESTAMPTZ NOT NULL DEFAULT now()
-               )""",
-            """CREATE TABLE IF NOT EXISTS tentativas (
-                   id            BIGSERIAL PRIMARY KEY,
-                   instalacao_id TEXT NOT NULL,
-                   codigo_ibge   TEXT,
-                   status        TEXT NOT NULL,
-                   quando        TIMESTAMPTZ NOT NULL
-               )""",
-            """CREATE TABLE IF NOT EXISTS eventos_licenca (
-                   id          BIGSERIAL PRIMARY KEY,
-                   licenca_id  TEXT NOT NULL,
-                   acao        TEXT NOT NULL,
-                   detalhes    TEXT NOT NULL DEFAULT '',
-                   quando      TIMESTAMPTZ NOT NULL
-               )""",
-            "ALTER TABLE instalacoes ADD COLUMN IF NOT EXISTS licenca_id TEXT REFERENCES licencas(licenca_id)",
-            "ALTER TABLE instalacoes ADD COLUMN IF NOT EXISTS status_instalacao TEXT",
-            "ALTER TABLE instalacoes ADD COLUMN IF NOT EXISTS ativada_em TIMESTAMPTZ",
-            "ALTER TABLE instalacoes ADD COLUMN IF NOT EXISTS revogada_em TIMESTAMPTZ",
-            "ALTER TABLE instalacoes ADD COLUMN IF NOT EXISTS ultima_consulta_em TIMESTAMPTZ",
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_licenca_municipio_em_aberto "
-            "ON licencas(codigo_ibge) WHERE status IN ('ativa', 'suspensa', 'pendente')",
-        ]
-        with self._engine.begin() as con:
-            for stmt in ddl:
-                con.execute(text(stmt))
+        from app.migracoes_schema import executar_migracoes
+        executar_migracoes(self._engine)
 
     def obter_instalacao(self, instalacao_id: str) -> Optional[dict[str, Any]]:
         from sqlalchemy import text
@@ -429,7 +518,8 @@ class RepositorioPostgres:
             row = con.execute(text(
                 "SELECT licenca_id, codigo_ibge, status, inicio_em, expira_em, "
                 "max_auditores, max_instalacoes_ativas, dias_offline, versao_minima, "
-                "criada_em, atualizada_em FROM licencas WHERE licenca_id = :l"
+                "criada_em, atualizada_em, chave_migracao, migrada_em "
+                "FROM licencas WHERE licenca_id = :l"
             ), {"l": licenca_id}).mappings().first()
         return self._datas_iso(dict(row)) if row else None
 
@@ -439,6 +529,7 @@ class RepositorioPostgres:
             rows = con.execute(text("""SELECT l.licenca_id, l.codigo_ibge, l.status,
                 l.inicio_em, l.expira_em, l.max_auditores, l.max_instalacoes_ativas,
                 l.dias_offline, l.versao_minima, l.criada_em, l.atualizada_em,
+                l.chave_migracao, l.migrada_em,
                 COUNT(i.instalacao_id) FILTER (WHERE i.status_instalacao = 'ativa') AS instalacoes_ativas
                 FROM licencas l LEFT JOIN instalacoes i ON i.licenca_id = l.licenca_id
                 GROUP BY l.licenca_id ORDER BY l.criada_em""")).mappings().all()
@@ -528,6 +619,205 @@ class RepositorioPostgres:
                 "WHERE licenca_id=:l ORDER BY quando DESC LIMIT :n"
             ), {"l": licenca_id, "n": max(1, int(limite))}).mappings().all()
         return [self._datas_iso(dict(r)) for r in rows]
+
+    def obter_migracao_dados(self, migracao_id: str) -> Optional[dict[str, Any]]:
+        from sqlalchemy import text
+        with self._engine.connect() as con:
+            row = con.execute(text(
+                "SELECT migracao_id, fingerprint, backup_referencia, aplicada_em, resultado "
+                "FROM migracoes_dados WHERE migracao_id=:m"
+            ), {"m": migracao_id}).mappings().first()
+        if not row:
+            return None
+        reg = self._datas_iso(dict(row))
+        try:
+            reg["resultado"] = json.loads(reg["resultado"])
+        except (TypeError, ValueError):
+            reg["resultado"] = {}
+        return reg
+
+    def migracao_legado_concluida(self) -> bool:
+        from sqlalchemy import text
+        with self._engine.connect() as con:
+            return con.execute(text(
+                "SELECT 1 FROM migracoes_dados WHERE migracao_id LIKE 'legado-v1-%' LIMIT 1"
+            )).first() is not None
+
+    def aplicar_migracao_legada(self, migracao_id: str, fingerprint: str,
+                                backup_referencia: str, planos: list[dict[str, Any]],
+                                quando: datetime) -> dict[str, Any]:
+        from sqlalchemy import text
+
+        with self._engine.begin() as con:
+            con.execute(text(
+                "SELECT pg_advisory_xact_lock(hashtext('techfisco-migracao-legada-v1'))"
+            ))
+            # Congela as fontes da migração. Escritas administrativas concorrentes
+            # aguardam o commit ou rollback, em vez de entrar entre a conferência
+            # do fingerprint e as contagens finais.
+            con.execute(text("LOCK TABLE instalacoes IN SHARE ROW EXCLUSIVE MODE"))
+            con.execute(text("LOCK TABLE licencas IN SHARE ROW EXCLUSIVE MODE"))
+            con.execute(text("LOCK TABLE municipios_revogados IN SHARE ROW EXCLUSIVE MODE"))
+            anterior = con.execute(text(
+                "SELECT resultado FROM migracoes_dados WHERE migracao_id=:m"
+            ), {"m": migracao_id}).scalar_one_or_none()
+            if anterior is not None:
+                resultado = json.loads(str(anterior))
+                return {**resultado, "repetida": True}
+
+            total_antes = int(con.execute(text("SELECT count(*) FROM instalacoes")).scalar_one())
+            revogadas_antes = int(con.execute(text(
+                "SELECT count(*) FROM instalacoes WHERE revogada=TRUE"
+            )).scalar_one())
+            municipios_antes = {
+                str(r[0]) for r in con.execute(text(
+                    "SELECT DISTINCT codigo_ibge FROM instalacoes ORDER BY codigo_ibge"
+                )).all()
+            }
+
+            for plano in planos:
+                licenca = plano["licenca"]
+                licenca_id = str(licenca["licenca_id"])
+                municipio_revogado = con.execute(text(
+                    "SELECT 1 FROM municipios_revogados WHERE codigo_ibge=:c"
+                ), {"c": licenca["codigo_ibge"]}).first() is not None
+                if municipio_revogado != bool(plano.get("municipio_revogado_esperado")):
+                    raise ValueError(
+                        f"revogação municipal mudou durante a migração: {licenca['codigo_ibge']}"
+                    )
+                existente = con.execute(text(
+                    "SELECT licenca_id, codigo_ibge, chave_migracao, status, "
+                    "inicio_em, expira_em, max_auditores, max_instalacoes_ativas, "
+                    "dias_offline, versao_minima FROM licencas "
+                    "WHERE licenca_id=:l FOR UPDATE"
+                ), {"l": licenca_id}).mappings().first()
+                if existente:
+                    if str(existente["codigo_ibge"]) != str(licenca["codigo_ibge"]):
+                        raise ValueError(f"licença existente pertence a outro município: {licenca_id}")
+                    if existente["chave_migracao"] not in (None, licenca["chave_migracao"]):
+                        raise ValueError(f"colisão de licença migrada: {licenca_id}")
+                    for campo in (
+                        "status", "max_auditores", "max_instalacoes_ativas",
+                        "dias_offline", "versao_minima",
+                    ):
+                        if existente[campo] != licenca[campo]:
+                            raise ValueError(
+                                f"licença mudou durante a migração: {licenca_id} ({campo})"
+                            )
+                    for campo in ("inicio_em", "expira_em"):
+                        atual = existente[campo]
+                        atual_iso = atual.isoformat() if atual is not None else None
+                        esperado = licenca[campo]
+                        if atual_iso != esperado:
+                            raise ValueError(
+                                f"licença mudou durante a migração: {licenca_id} ({campo})"
+                            )
+                    con.execute(text(
+                        "UPDATE licencas SET chave_migracao=:c, migrada_em=:q "
+                        "WHERE licenca_id=:l"
+                    ), {"c": licenca["chave_migracao"], "q": quando, "l": licenca_id})
+                else:
+                    con.execute(text("""INSERT INTO licencas (
+                        licenca_id, codigo_ibge, status, inicio_em, expira_em,
+                        max_auditores, max_instalacoes_ativas, dias_offline,
+                        versao_minima, criada_em, atualizada_em, chave_migracao, migrada_em
+                    ) VALUES (
+                        :licenca_id, :codigo_ibge, :status, :inicio_em, :expira_em,
+                        :max_auditores, :max_instalacoes_ativas, :dias_offline,
+                        :versao_minima, :criada_em, :atualizada_em, :chave_migracao, :migrada_em
+                    )"""), licenca)
+
+                for vinculo in plano["instalacoes"]:
+                    iid = str(vinculo["instalacao_id"])
+                    instalacao = con.execute(text(
+                        "SELECT codigo_ibge, licenca_id, revogada, max_usuarios FROM instalacoes "
+                        "WHERE instalacao_id=:i FOR UPDATE"
+                    ), {"i": iid}).mappings().first()
+                    if instalacao is None:
+                        raise ValueError(f"instalação desapareceu durante a migração: {iid}")
+                    if str(instalacao["codigo_ibge"] or "") != str(licenca["codigo_ibge"]):
+                        raise ValueError(f"município da instalação mudou durante a migração: {iid}")
+                    if (
+                        str(instalacao["codigo_ibge"] or "") != vinculo["codigo_ibge_esperado"]
+                        or bool(instalacao["revogada"]) != vinculo["revogada_esperada"]
+                        or instalacao["max_usuarios"] != vinculo["max_usuarios_esperado"]
+                    ):
+                        raise ValueError(f"instalação mudou durante a migração: {iid}")
+                    if instalacao["licenca_id"] not in (None, licenca_id):
+                        raise ValueError(f"instalação já pertence a outra licença: {iid}")
+                    status = str(vinculo["status"])
+                    con.execute(text("""UPDATE instalacoes SET
+                        licenca_id=:l, status_instalacao=:s,
+                        ativada_em=CASE WHEN :s='ativa' THEN :q ELSE NULL END,
+                        revogada_em=CASE WHEN :s IN ('revogada','substituida') THEN :q ELSE NULL END
+                        WHERE instalacao_id=:i"""), {
+                        "l": licenca_id, "s": status, "q": quando, "i": iid,
+                    })
+                con.execute(text(
+                    "INSERT INTO eventos_licenca (licenca_id, acao, detalhes, quando) "
+                    "VALUES (:l, 'migracao_legada', :d, :q)"
+                ), {
+                    "l": licenca_id,
+                    "d": json.dumps({
+                        "migracao_id": migracao_id,
+                        "instalacoes": len(plano["instalacoes"]),
+                    }, ensure_ascii=False, sort_keys=True),
+                    "q": quando,
+                })
+
+            total_depois = int(con.execute(text("SELECT count(*) FROM instalacoes")).scalar_one())
+            revogadas_depois = int(con.execute(text(
+                "SELECT count(*) FROM instalacoes WHERE revogada=TRUE"
+            )).scalar_one())
+            municipios_depois = {
+                str(r[0]) for r in con.execute(text(
+                    "SELECT DISTINCT codigo_ibge FROM instalacoes ORDER BY codigo_ibge"
+                )).all()
+            }
+            sem_licenca = int(con.execute(text(
+                "SELECT count(*) FROM instalacoes WHERE licenca_id IS NULL"
+            )).scalar_one())
+            ativas_incompletas = int(con.execute(text("""SELECT count(*) FROM licencas
+                WHERE status='ativa' AND (
+                    inicio_em IS NULL OR expira_em IS NULL OR max_auditores IS NULL
+                )""")).scalar_one())
+            excesso = int(con.execute(text("""SELECT count(*) FROM (
+                SELECT l.licenca_id FROM licencas l
+                LEFT JOIN instalacoes i ON i.licenca_id=l.licenca_id
+                  AND i.status_instalacao='ativa'
+                GROUP BY l.licenca_id, l.max_instalacoes_ativas
+                HAVING count(i.instalacao_id) > l.max_instalacoes_ativas
+            ) x""")).scalar_one())
+            if total_antes != total_depois:
+                raise ValueError("a quantidade total de instalações mudou durante a migração")
+            if revogadas_antes != revogadas_depois:
+                raise ValueError("a quantidade de revogações legadas mudou durante a migração")
+            if municipios_antes != municipios_depois:
+                raise ValueError("a lista de municípios mudou durante a migração")
+            if sem_licenca:
+                raise ValueError(f"restaram {sem_licenca} instalações sem licença")
+            if ativas_incompletas:
+                raise ValueError(f"existem {ativas_incompletas} licenças ativas incompletas")
+            if excesso:
+                raise ValueError(f"existem {excesso} licenças acima do limite de instalações")
+
+            resultado = {
+                "total_instalacoes_antes": total_antes,
+                "total_instalacoes_depois": total_depois,
+                "municipios_antes": sorted(municipios_antes),
+                "municipios_depois": sorted(municipios_depois),
+                "revogadas_antes": revogadas_antes,
+                "revogadas_depois": revogadas_depois,
+                "licencas_migradas": len(planos),
+                "repetida": False,
+            }
+            con.execute(text("""INSERT INTO migracoes_dados (
+                migracao_id, fingerprint, backup_referencia, aplicada_em, resultado
+            ) VALUES (:m, :f, :b, :q, :r)"""), {
+                "m": migracao_id, "f": fingerprint, "b": backup_referencia,
+                "q": quando, "r": json.dumps(resultado, ensure_ascii=False, sort_keys=True),
+            })
+            return resultado
 
     def pronto(self) -> bool:
         from sqlalchemy import text

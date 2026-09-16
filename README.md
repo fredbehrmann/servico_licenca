@@ -9,6 +9,10 @@ plano de indisponibilidade).
 O contrato de dados e a assinatura são **byte-compatíveis** com o cliente do SICOF — verificado de
 ponta a ponta (o serviço assina, o `licenca_cliente` do SICOF valida).
 
+Autorizações antigas são convertidas pela ferramenta segura e idempotente descrita em
+[`MIGRACAO_LEGADO.md`](MIGRACAO_LEGADO.md). A migração de dados nunca roda automaticamente durante
+o startup; somente as alterações aditivas e versionadas do esquema são aplicadas na inicialização.
+
 ## Como funciona
 
 - `POST /v1/consulta` — o app manda `{instalacao_id, codigo_ibge, versao_app, nonce}`; o serviço
@@ -122,8 +126,8 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-48 testes: contrato/canonização, decisão de status, consulta assinada e verificável, rate limit,
-503 sem chave, contrato com vigência real, instalações e administração. Rodam com
+60 testes: contrato/canonização, decisão de status, consulta assinada e verificável, rate limit,
+503 sem chave, contrato com vigência real, instalações, migração idempotente e administração. Rodam com
 repositório em memória — não exigem Postgres.
 
 ## Compatibilidade — NÃO DIVERGIR

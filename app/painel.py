@@ -158,7 +158,7 @@ _TEMPLATE = """<!doctype html>
       <div id="historico" class="vazio"></div>
     </div>
 
-    <div class="cartao">
+    <div class="cartao" id="box-legado">
       <h2>Autorizações antigas <span class="dir">compatibilidade até a Etapa 4</span></h2>
       <div class="linha">
         <div><label>instalacao_id (UUID)</label><input id="a_inst" placeholder="uuid da prefeitura"></div>
@@ -240,17 +240,19 @@ function sair(){ sessionStorage.removeItem('admtok'); document.getElementById('t
 async function carregar(){
   if (!tok()){ aviso('Cole o token e clique em Entrar.', false); return; }
   try{
-    const [inst, mr, tent, lic, saude] = await Promise.all([
+    const [inst, mr, tent, lic, mig, saude] = await Promise.all([
       chamar('GET','/admin/instalacoes'),
       chamar('GET','/admin/municipios-revogados'),
       chamar('GET','/admin/tentativas?limite=100'),
       chamar('GET','/admin/licencas'),
+      chamar('GET','/admin/migracao-legado/status'),
       fetch('/health').then(r=>r.json()).catch(()=>({}))
     ]);
     document.getElementById('painel').style.display='';
     document.getElementById('amb').textContent = saude && saude.ambiente ? ('ambiente: '+saude.ambiente) : '';
     _instalacoes = inst.instalacoes || [];
     _licencas = lic.licencas || [];
+    document.getElementById('box-legado').style.display = mig.concluida ? 'none' : '';
     const ativas = _instalacoes.filter(i=>i.status_instalacao ? i.status_instalacao==='ativa' : !i.revogada).length;
     document.getElementById('r-total').textContent = _instalacoes.length;
     document.getElementById('r-ativas').textContent = ativas;

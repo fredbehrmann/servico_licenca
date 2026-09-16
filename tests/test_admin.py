@@ -106,3 +106,28 @@ def test_pagina_admin_publica_e_sem_dados(cliente):
     assert "ADMIN_TOKEN" in r.text
     # nenhum dado de instalação embutido na página
     assert "instalacao_id" in r.text and "inst-1" not in r.text
+
+
+def test_autorizacao_legada_fecha_depois_da_migracao(cliente):
+    c, _, main = cliente
+    from datetime import datetime, timedelta, timezone
+    from app.migracao_legado import aplicar_documento, gerar_documento
+
+    c.post("/admin/autorizar", headers=_H,
+           json={"instalacao_id": "inst-antiga", "codigo_ibge": "2927408", "max_usuarios": 3})
+    documento = gerar_documento(main.estado.repo)
+    decisao = documento["decisoes"][0]
+    agora = datetime.now(timezone.utc)
+    decisao.update({
+        "confirmado": True, "status": "ativa",
+        "inicio_em": (agora - timedelta(days=1)).isoformat(),
+        "expira_em": (agora + timedelta(days=365)).isoformat(),
+        "instalacao_ativa_id": "inst-antiga", "instalacoes_contingencia_ids": [],
+    })
+    aplicar_documento(documento, main.estado.repo, "backup-teste", agora=agora)
+
+    status = c.get("/admin/migracao-legado/status", headers=_H).json()
+    assert status == {"ok": True, "concluida": True}
+    nova = c.post("/admin/autorizar", headers=_H,
+                  json={"instalacao_id": "nova-legada", "codigo_ibge": "2927408"})
+    assert nova.status_code == 409
