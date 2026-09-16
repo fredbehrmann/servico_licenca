@@ -4,9 +4,8 @@
 Endpoints:
 - ``POST /v1/consulta`` — recebe os quatro campos, decide o status, assina e
   devolve a licença. Único endpoint que o app do auditor chama.
-- ``POST /admin/autorizar`` / ``/admin/revogar`` / ``/admin/revogar-municipio`` /
-  ``GET /admin/instalacoes`` — administração da allowlist, protegidos por
-  ``ADMIN_TOKEN`` (Bearer).
+- ``/admin/licencas`` — contratos, instalações vinculadas e histórico;
+  os endpoints antigos da allowlist permanecem compatíveis até a Etapa 4.
 - ``GET /health`` / ``GET /ready`` — vida e prontidão (banco), para o deploy.
 
 Configuração por variáveis de ambiente (ver README):
@@ -18,6 +17,7 @@ Configuração por variáveis de ambiente (ver README):
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -26,7 +26,7 @@ from typing import Any, Optional
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from app import contrato
+from app import contrato, licencas
 from app.painel import PAGINA_ADMIN
 from app.assinador import Assinador, assinador_do_ambiente
 from app.limite import LimitadorMemoria
@@ -149,7 +149,10 @@ async def autorizar(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="instalacao_id e codigo_ibge obrigatórios")
     maxu = corpo.get("max_usuarios")
     maxu = int(maxu) if maxu not in (None, "") else None
-    estado.repo.autorizar(inst, ibge, maxu)
+    try:
+        estado.repo.autorizar(inst, ibge, maxu)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     _log.info("autorizada instalacao=%s ibge=%s max=%s", inst, ibge, maxu)
     return {"ok": True, "instalacao_id": inst}
 
@@ -160,7 +163,19 @@ async def revogar(request: Request) -> dict[str, Any]:
     inst = str(corpo.get("instalacao_id") or "").strip()
     if not inst:
         raise HTTPException(status_code=400, detail="instalacao_id obrigatório")
-    achou = estado.repo.revogar_instalacao(inst)
+    existente = estado.repo.obter_instalacao(inst)
+    if existente and existente.get("licenca_id"):
+        agora = datetime.now(timezone.utc)
+        estado.repo.associar_instalacao(
+            inst, str(existente["licenca_id"]), "revogada", agora,
+        )
+        estado.repo.registrar_evento_licenca(
+            str(existente["licenca_id"]), "instalacao_revogada",
+            json.dumps({"instalacao_id": inst}, ensure_ascii=False, sort_keys=True), agora,
+        )
+        achou = True
+    else:
+        achou = estado.repo.revogar_instalacao(inst)
     _log.info("revogada instalacao=%s achou=%s", inst, achou)
     return {"ok": True, "revogada": achou}
 
@@ -201,6 +216,100 @@ async def listar_municipios_revogados() -> dict[str, Any]:
 async def listar_tentativas(limite: int = 100) -> dict[str, Any]:
     """Consultas recentes (quem consultou, quando, status). Sem dado pessoal."""
     return {"ok": True, "tentativas": estado.repo.listar_tentativas(limite)}
+
+
+# ─── Administração contratual (Etapa 3) ────────────────────────────────────
+
+
+@app.post("/admin/licencas", dependencies=[Depends(exigir_admin)])
+async def criar_licenca(request: Request) -> dict[str, Any]:
+    try:
+        corpo = await request.json()
+        if not isinstance(corpo, dict):
+            raise licencas.LicencaInvalida("corpo deve ser um objeto JSON")
+        if "licenca_id" in corpo:
+            raise licencas.LicencaInvalida("licenca_id é gerado pelo serviço")
+        dados = licencas.normalizar_criacao(corpo)
+        criada = estado.repo.criar_licenca(dados)
+        agora = datetime.now(timezone.utc)
+        estado.repo.registrar_evento_licenca(
+            criada["licenca_id"], "licenca_criada",
+            json.dumps({
+                "codigo_ibge": criada["codigo_ibge"], "status": criada["status"],
+                "expira_em": criada["expira_em"], "max_auditores": criada["max_auditores"],
+            }, ensure_ascii=False, sort_keys=True),
+            agora,
+        )
+        _log.info("licenca criada id=%s ibge=%s", criada["licenca_id"], criada["codigo_ibge"])
+        return {"ok": True, "licenca": criada}
+    except (licencas.LicencaInvalida, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/admin/licencas", dependencies=[Depends(exigir_admin)])
+async def listar_licencas() -> dict[str, Any]:
+    return {"ok": True, "licencas": estado.repo.listar_licencas()}
+
+
+@app.patch("/admin/licencas/{licenca_id}", dependencies=[Depends(exigir_admin)])
+async def atualizar_licenca(licenca_id: str, request: Request) -> dict[str, Any]:
+    existente = estado.repo.obter_licenca(licenca_id)
+    if existente is None:
+        raise HTTPException(status_code=404, detail="licença não encontrada")
+    try:
+        corpo = await request.json()
+        if not isinstance(corpo, dict):
+            raise licencas.LicencaInvalida("corpo deve ser um objeto JSON")
+        dados = licencas.normalizar_atualizacao(existente, corpo)
+        atualizada = estado.repo.atualizar_licenca(licenca_id, dados)
+        if atualizada is None:
+            raise HTTPException(status_code=404, detail="licença não encontrada")
+        estado.repo.registrar_evento_licenca(
+            licenca_id, "licenca_atualizada",
+            json.dumps({
+                "campos": sorted(corpo),
+                "status_anterior": existente.get("status"),
+                "status_atual": atualizada.get("status"),
+                "expira_em": atualizada.get("expira_em"),
+            }, ensure_ascii=False, sort_keys=True),
+            datetime.now(timezone.utc),
+        )
+        _log.info("licenca atualizada id=%s campos=%s", licenca_id, sorted(corpo))
+        return {"ok": True, "licenca": atualizada}
+    except (licencas.LicencaInvalida, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/admin/licencas/{licenca_id}/instalacoes", dependencies=[Depends(exigir_admin)])
+async def associar_instalacao(licenca_id: str, request: Request) -> dict[str, Any]:
+    try:
+        corpo = await request.json()
+        if not isinstance(corpo, dict):
+            raise licencas.LicencaInvalida("corpo deve ser um objeto JSON")
+        vinculo = licencas.normalizar_instalacao(corpo)
+        agora = datetime.now(timezone.utc)
+        instalacao = estado.repo.associar_instalacao(
+            vinculo["instalacao_id"], licenca_id, vinculo["status"], agora
+        )
+        estado.repo.registrar_evento_licenca(
+            licenca_id, "instalacao_associada",
+            json.dumps(vinculo, ensure_ascii=False, sort_keys=True), agora,
+        )
+        _log.info("instalacao associada id=%s licenca=%s status=%s",
+                  vinculo["instalacao_id"], licenca_id, vinculo["status"])
+        return {"ok": True, "instalacao": instalacao}
+    except (licencas.LicencaInvalida, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/admin/licencas/{licenca_id}/historico", dependencies=[Depends(exigir_admin)])
+async def historico_licenca(licenca_id: str, limite: int = 100) -> dict[str, Any]:
+    if estado.repo.obter_licenca(licenca_id) is None:
+        raise HTTPException(status_code=404, detail="licença não encontrada")
+    return {
+        "ok": True,
+        "eventos": estado.repo.listar_eventos_licenca(licenca_id, limite),
+    }
 
 
 @app.get("/admin", response_class=HTMLResponse)

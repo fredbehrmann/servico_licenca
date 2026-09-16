@@ -8,9 +8,9 @@ os mesmos que já existem e são protegidos por token. A página em si é públi
 formulário); nenhum dado aparece sem o token correto.
 
 Visual alinhado à identidade do TechFisco (navy #0f2747 + verde #07805e, logo do
-sistema). Mostra: resumo (total/ativas/revogadas), busca na lista de instalações,
-autorizar/reativar/revogar, municípios revogados, e as consultas recentes (quem
-consultou, quando, status) — tudo sem dado pessoal.
+sistema). Mostra licenças contratuais, vigência, limites, instalações ativas e
+de contingência, histórico, além da allowlist legada até sua migração — tudo sem
+dado pessoal.
 """
 
 from __future__ import annotations
@@ -58,9 +58,9 @@ _TEMPLATE = """<!doctype html>
   h2{font-size:15px;margin:0 0 14px;color:var(--navy);display:flex;align-items:center;gap:8px;font-weight:600}
   h2 .dir{margin-left:auto;font-weight:400}
   label{display:block;font-size:12px;color:var(--muted);margin:8px 0 4px}
-  input{width:100%;padding:9px 11px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:14px;
+  input,select{width:100%;padding:9px 11px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:14px;
         background:var(--surface);color:var(--text)}
-  input:focus{outline:2px solid var(--verde);outline-offset:1px;border-color:var(--verde)}
+  input:focus,select:focus{outline:2px solid var(--verde);outline-offset:1px;border-color:var(--verde)}
   .linha{display:flex;gap:12px;flex-wrap:wrap}
   .linha>div{flex:1;min-width:150px}
   button{background:var(--verde);color:#fff;border:0;border-radius:var(--radius-sm);padding:10px 16px;
@@ -79,6 +79,8 @@ _TEMPLATE = """<!doctype html>
   .tag{font-size:11px;padding:3px 10px;border-radius:20px;white-space:nowrap;font-weight:500}
   .t-ativa{background:var(--ok-bg);color:var(--ok)}
   .t-revogada{background:var(--alert-bg);color:var(--alert)}
+  .t-suspensa,.t-pendente,.t-contingencia{background:var(--warn-bg);color:var(--warn)}
+  .t-expirada,.t-substituida{background:#eef2f7;color:var(--muted)}
   .t-naoautorizada{background:var(--warn-bg);color:var(--warn)}
   .t-outro{background:#eef2f7;color:var(--muted)}
   .resumo{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px}
@@ -121,7 +123,43 @@ _TEMPLATE = """<!doctype html>
     </div>
 
     <div class="cartao">
-      <h2>Autorizar / reativar instalação</h2>
+      <h2>Nova licença contratual</h2>
+      <div class="linha">
+        <div><label>Código IBGE</label><input id="l_ibge" placeholder="ex.: 2927408"></div>
+        <div><label>Início</label><input id="l_inicio" type="date"></div>
+        <div><label>Expiração</label><input id="l_fim" type="date"></div>
+        <div><label>Estado inicial</label><select id="l_status"><option value="pendente">pendente</option><option value="ativa">ativa</option></select></div>
+      </div>
+      <div class="linha">
+        <div><label>Máx. auditores</label><input id="l_aud" type="number" min="1" value="5"></div>
+        <div><label>Máx. instalações ativas</label><input id="l_inst" type="number" min="1" value="1"></div>
+        <div><label>Dias sem internet</label><input id="l_off" type="number" min="1" value="7"></div>
+        <div><label>Versão mínima</label><input id="l_ver" value="1.0.0"></div>
+      </div>
+      <button style="margin-top:12px" onclick="criarLicenca()">Criar licença</button>
+    </div>
+
+    <div class="cartao">
+      <h2>Licenças contratuais</h2>
+      <table>
+        <thead><tr><th>IBGE</th><th>estado</th><th>vigência</th><th>auditores</th><th>instalações</th><th>ações</th></tr></thead>
+        <tbody id="tab-lic"><tr><td colspan="6" class="vazio">Nenhuma licença contratual.</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="cartao">
+      <h2>Associar instalação à licença</h2>
+      <div class="linha">
+        <div><label>Licença</label><select id="v_lic"><option value="">selecione</option></select></div>
+        <div><label>instalacao_id</label><input id="v_inst" placeholder="UUID exibido pelo TechFisco"></div>
+        <div><label>Estado</label><select id="v_status"><option value="ativa">ativa</option><option value="contingencia">contingência</option><option value="revogada">revogada</option><option value="substituida">substituída</option></select></div>
+      </div>
+      <button style="margin-top:12px" onclick="associarInstalacao()">Associar instalação</button>
+      <div id="historico" class="vazio"></div>
+    </div>
+
+    <div class="cartao">
+      <h2>Autorizações antigas <span class="dir">compatibilidade até a Etapa 4</span></h2>
       <div class="linha">
         <div><label>instalacao_id (UUID)</label><input id="a_inst" placeholder="uuid da prefeitura"></div>
         <div><label>codigo_ibge</label><input id="a_ibge" placeholder="ex.: 2927408"></div>
@@ -165,12 +203,16 @@ _TEMPLATE = """<!doctype html>
 
 <script>
 let _instalacoes = [];
+let _licencas = [];
 function tok(){ return sessionStorage.getItem('admtok') || ''; }
 function aviso(msg, ok){ const a=document.getElementById('aviso'); a.textContent=msg; a.className= ok?'ok':'erro';
   clearTimeout(window._av); window._av=setTimeout(()=>{a.className='';}, 4000); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function arg(s){ return encodeURIComponent(String(s==null?'':s)).replace(/'/g,'%27'); }
 function tagStatus(s){
-  const m={ativa:'t-ativa',revogada:'t-revogada',instalacao_nao_autorizada:'t-naoautorizada'};
+  const m={ativa:'t-ativa',revogada:'t-revogada',suspensa:'t-suspensa',pendente:'t-pendente',
+    expirada:'t-expirada',contingencia:'t-contingencia',substituida:'t-substituida',
+    instalacao_nao_autorizada:'t-naoautorizada'};
   return '<span class="tag '+(m[s]||'t-outro')+'">'+esc(s)+'</span>';
 }
 function quando(iso){ try{ return new Date(iso).toLocaleString('pt-BR'); }catch(e){ return esc(iso); } }
@@ -198,24 +240,89 @@ function sair(){ sessionStorage.removeItem('admtok'); document.getElementById('t
 async function carregar(){
   if (!tok()){ aviso('Cole o token e clique em Entrar.', false); return; }
   try{
-    const [inst, mr, tent, saude] = await Promise.all([
+    const [inst, mr, tent, lic, saude] = await Promise.all([
       chamar('GET','/admin/instalacoes'),
       chamar('GET','/admin/municipios-revogados'),
       chamar('GET','/admin/tentativas?limite=100'),
+      chamar('GET','/admin/licencas'),
       fetch('/health').then(r=>r.json()).catch(()=>({}))
     ]);
     document.getElementById('painel').style.display='';
     document.getElementById('amb').textContent = saude && saude.ambiente ? ('ambiente: '+saude.ambiente) : '';
     _instalacoes = inst.instalacoes || [];
-    const ativas = _instalacoes.filter(i=>!i.revogada).length;
+    _licencas = lic.licencas || [];
+    const ativas = _instalacoes.filter(i=>i.status_instalacao ? i.status_instalacao==='ativa' : !i.revogada).length;
     document.getElementById('r-total').textContent = _instalacoes.length;
     document.getElementById('r-ativas').textContent = ativas;
     document.getElementById('r-revogadas').textContent = _instalacoes.length - ativas;
     document.getElementById('r-munic').textContent = (mr.codigos||[]).length;
     renderInstalacoes();
+    renderLicencas();
     renderMunicipios(mr.codigos||[]);
     renderTentativas(tent.tentativas||[]);
     aviso('Carregado.', true);
+  }catch(e){}
+}
+
+function dataCurta(iso){ return iso ? String(iso).slice(0,10) : '—'; }
+function renderLicencas(){
+  const tb=document.getElementById('tab-lic'); tb.innerHTML='';
+  const sel=document.getElementById('v_lic'); sel.innerHTML='<option value="">selecione</option>';
+  if(!_licencas.length){ tb.innerHTML='<tr><td colspan="6" class="vazio">Nenhuma licença contratual.</td></tr>'; return; }
+  for(const l of _licencas){
+    const id=arg(l.licenca_id);
+    const op=document.createElement('option'); op.value=l.licenca_id;
+    op.textContent=l.codigo_ibge+' — '+l.status; sel.appendChild(op);
+    const acoes='<button class="sec peq" onclick="renovarLicenca(\\''+id+'\\')">Renovar</button> '+
+      '<button class="sec peq" onclick="alterarStatusLicenca(\\''+id+'\\',\\'ativa\\')">Ativar</button> '+
+      '<button class="sec peq" onclick="alterarStatusLicenca(\\''+id+'\\',\\'suspensa\\')">Suspender</button> '+
+      '<button class="perigo peq" onclick="alterarStatusLicenca(\\''+id+'\\',\\'revogada\\')">Revogar</button> '+
+      '<button class="sec peq" onclick="verHistorico(\\''+id+'\\')">Histórico</button>';
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+esc(l.codigo_ibge)+'<br><span class="cod">'+esc(l.licenca_id)+'</span></td>'+
+      '<td>'+tagStatus(l.status)+'</td><td>'+dataCurta(l.inicio_em)+' a '+dataCurta(l.expira_em)+'</td>'+
+      '<td>'+esc(l.max_auditores)+'</td><td>'+esc(l.instalacoes_ativas)+' / '+esc(l.max_instalacoes_ativas)+'</td>'+
+      '<td>'+acoes+'</td>';
+    tb.appendChild(tr);
+  }
+}
+
+async function criarLicenca(){
+  const ibge=document.getElementById('l_ibge').value.trim();
+  const ini=document.getElementById('l_inicio').value; const fim=document.getElementById('l_fim').value;
+  if(!ibge||!ini||!fim){ aviso('Informe IBGE, início e expiração.', false); return; }
+  const corpo={codigo_ibge:ibge,status:document.getElementById('l_status').value,
+    inicio_em:ini+'T00:00:00+00:00',expira_em:fim+'T23:59:59+00:00',
+    max_auditores:parseInt(document.getElementById('l_aud').value,10),
+    max_instalacoes_ativas:parseInt(document.getElementById('l_inst').value,10),
+    dias_offline:parseInt(document.getElementById('l_off').value,10),
+    versao_minima:document.getElementById('l_ver').value.trim()};
+  if(!confirm('Criar a licença do município '+ibge+' com término em '+fim+'?'))return;
+  try{ await chamar('POST','/admin/licencas',corpo); aviso('Licença criada.',true); carregar(); }catch(e){}
+}
+async function alterarStatusLicenca(idCod,status){
+  const id=decodeURIComponent(idCod);
+  if(!confirm('Alterar esta licença para '+status+'?'))return;
+  try{ await chamar('PATCH','/admin/licencas/'+encodeURIComponent(id),{status}); aviso('Estado atualizado.',true); carregar(); }catch(e){}
+}
+async function renovarLicenca(idCod){
+  const id=decodeURIComponent(idCod);
+  const fim=prompt('Nova data final (AAAA-MM-DD):'); if(!fim)return;
+  if(!confirm('Renovar esta licença até '+fim+'?'))return;
+  try{ await chamar('PATCH','/admin/licencas/'+encodeURIComponent(id),{expira_em:fim+'T23:59:59+00:00',status:'ativa'}); aviso('Licença renovada.',true); carregar(); }catch(e){}
+}
+async function associarInstalacao(){
+  const lid=document.getElementById('v_lic').value; const iid=document.getElementById('v_inst').value.trim();
+  const status=document.getElementById('v_status').value;
+  if(!lid||!iid){ aviso('Selecione a licença e informe o identificador da instalação.',false); return; }
+  if(!confirm('Associar a instalação como '+status+'?'))return;
+  try{ await chamar('POST','/admin/licencas/'+encodeURIComponent(lid)+'/instalacoes',{instalacao_id:iid,status}); aviso('Instalação associada.',true); carregar(); }catch(e){}
+}
+async function verHistorico(idCod){
+  const id=decodeURIComponent(idCod);
+  try{ const r=await chamar('GET','/admin/licencas/'+encodeURIComponent(id)+'/historico');
+    const h=document.getElementById('historico');
+    h.innerHTML='<b>Histórico da licença</b><br>'+(r.eventos.length?r.eventos.map(e=>esc(quando(e.quando))+' — '+esc(e.acao)+' — '+esc(e.detalhes)).join('<br>'):'Sem eventos.');
   }catch(e){}
 }
 
@@ -226,10 +333,15 @@ function renderInstalacoes(){
     String(i.instalacao_id).toLowerCase().includes(f) || String(i.codigo_ibge).toLowerCase().includes(f));
   if (!lista.length){ tb.innerHTML='<tr><td colspan="5" class="vazio">'+(f?'Nada encontrado para o filtro.':'Nenhuma instalação autorizada ainda.')+'</td></tr>'; return; }
   for (const i of lista){
-    const estado = i.revogada ? tagStatus('revogada') : tagStatus('ativa');
-    const acao = i.revogada
-      ? '<button class="sec peq" onclick="reativar(\\''+esc(i.instalacao_id)+'\\',\\''+esc(i.codigo_ibge)+'\\','+(i.max_usuarios==null?'null':i.max_usuarios)+')">Reativar</button>'
-      : '<button class="perigo peq" onclick="revogar(\\''+esc(i.instalacao_id)+'\\')">Revogar</button>';
+    const nomeEstado = i.status_instalacao || (i.revogada ? 'revogada' : 'ativa');
+    const estado = tagStatus(nomeEstado);
+    const acao = i.licenca_id
+      ? '<button class="sec peq" onclick="mudarStatusInstalacao(\\''+arg(i.licenca_id)+'\\',\\''+arg(i.instalacao_id)+'\\',\\'ativa\\')">Ativar</button> '+
+        '<button class="sec peq" onclick="mudarStatusInstalacao(\\''+arg(i.licenca_id)+'\\',\\''+arg(i.instalacao_id)+'\\',\\'contingencia\\')">Contingência</button> '+
+        '<button class="perigo peq" onclick="mudarStatusInstalacao(\\''+arg(i.licenca_id)+'\\',\\''+arg(i.instalacao_id)+'\\',\\'revogada\\')">Revogar</button>'
+      : (i.revogada
+        ? '<button class="sec peq" onclick="reativar(\\''+arg(i.instalacao_id)+'\\',\\''+arg(i.codigo_ibge)+'\\','+(i.max_usuarios==null?'null':i.max_usuarios)+')">Reativar</button>'
+        : '<button class="perigo peq" onclick="revogar(\\''+arg(i.instalacao_id)+'\\')">Revogar</button>');
     const tr=document.createElement('tr');
     tr.innerHTML='<td class="cod">'+esc(i.instalacao_id)+'</td><td>'+esc(i.codigo_ibge)+'</td>'+
       '<td>'+(i.max_usuarios==null?'—':esc(i.max_usuarios))+'</td><td>'+estado+'</td><td style="text-align:right">'+acao+'</td>';
@@ -241,7 +353,7 @@ function renderMunicipios(codigos){
   if (!codigos.length){ tm.innerHTML='<tr><td colspan="2" class="vazio">Nenhum.</td></tr>'; return; }
   for (const c of codigos){
     const tr=document.createElement('tr');
-    tr.innerHTML='<td>'+esc(c)+'</td><td style="text-align:right"><button class="sec peq" onclick="reativarMunicipio(\\''+esc(c)+'\\')">Reativar</button></td>';
+    tr.innerHTML='<td>'+esc(c)+'</td><td style="text-align:right"><button class="sec peq" onclick="reativarMunicipio(\\''+arg(c)+'\\')">Reativar</button></td>';
     tm.appendChild(tr);
   }
 }
@@ -267,16 +379,21 @@ async function autorizar(){
     document.getElementById('a_inst').value=''; document.getElementById('a_ibge').value=''; document.getElementById('a_max').value='';
     carregar(); }catch(e){}
 }
-async function revogar(inst){ if(!confirm('Revogar a instalação '+inst+'?'))return;
+async function revogar(instCod){ const inst=decodeURIComponent(instCod); if(!confirm('Revogar a instalação '+inst+'?'))return;
   try{ await chamar('POST','/admin/revogar',{instalacao_id:inst}); aviso('Instalação revogada.', true); carregar(); }catch(e){} }
-async function reativar(inst,ibge,maxu){ const corpo={instalacao_id:inst,codigo_ibge:ibge}; if(maxu!==null)corpo.max_usuarios=maxu;
+async function mudarStatusInstalacao(licencaCod,instCod,status){
+  const licenca=decodeURIComponent(licencaCod); const inst=decodeURIComponent(instCod);
+  if(!confirm('Alterar esta instalação para '+status+'?'))return;
+  try{ await chamar('POST','/admin/licencas/'+encodeURIComponent(licenca)+'/instalacoes',
+      {instalacao_id:inst,status}); aviso('Estado da instalação atualizado.',true); carregar(); }catch(e){} }
+async function reativar(instCod,ibgeCod,maxu){ const inst=decodeURIComponent(instCod); const ibge=decodeURIComponent(ibgeCod); const corpo={instalacao_id:inst,codigo_ibge:ibge}; if(maxu!==null)corpo.max_usuarios=maxu;
   try{ await chamar('POST','/admin/autorizar',corpo); aviso('Instalação reativada.', true); carregar(); }catch(e){} }
 async function revogarMunicipio(){ const ibge=document.getElementById('m_ibge').value.trim();
   if(!ibge){ aviso('Informe o codigo_ibge.', false); return; }
   if(!confirm('Revogar TODAS as instalações do município '+ibge+'?'))return;
   try{ await chamar('POST','/admin/revogar-municipio',{codigo_ibge:ibge}); aviso('Município revogado.', true);
     document.getElementById('m_ibge').value=''; carregar(); }catch(e){} }
-async function reativarMunicipio(ibge){
+async function reativarMunicipio(ibgeCod){ const ibge=decodeURIComponent(ibgeCod);
   try{ await chamar('POST','/admin/reativar-municipio',{codigo_ibge:ibge}); aviso('Município reativado.', true); carregar(); }catch(e){} }
 
 if (tok()) carregar();
