@@ -218,7 +218,7 @@ def test_arquivo_de_decisoes_tem_permissao_restrita(tmp_path):
 
 
 def test_migracoes_de_esquema_sao_versionadas_e_nao_removem_dados():
-    assert [m.versao for m in MIGRACOES] == [1, 2, 3]
+    assert [m.versao for m in MIGRACOES] == [1, 2, 3, 4]
     assert len({m.checksum for m in MIGRACOES}) == len(MIGRACOES)
     comandos = "\n".join(c for m in MIGRACOES for c in m.comandos).upper()
     assert "DROP TABLE" not in comandos and "DROP COLUMN" not in comandos

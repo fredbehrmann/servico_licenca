@@ -104,6 +104,8 @@ _TEMPLATE = """<!doctype html>
 
   <div class="cartao" id="box-acesso">
     <h2>Acesso</h2>
+    <label>Operador responsável</label>
+    <input id="operador" placeholder="seu nome ou identificador corporativo" autocomplete="username">
     <label>Token de administração</label>
     <input id="token" type="password" placeholder="cole aqui o ADMIN_TOKEN" autocomplete="off"
            onkeydown="if(event.key==='Enter')entrar()">
@@ -205,6 +207,7 @@ _TEMPLATE = """<!doctype html>
 let _instalacoes = [];
 let _licencas = [];
 function tok(){ return sessionStorage.getItem('admtok') || ''; }
+function operador(){ return sessionStorage.getItem('admoperador') || ''; }
 function aviso(msg, ok){ const a=document.getElementById('aviso'); a.textContent=msg; a.className= ok?'ok':'erro';
   clearTimeout(window._av); window._av=setTimeout(()=>{a.className='';}, 4000); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -220,7 +223,8 @@ function quando(iso){ try{ return new Date(iso).toLocaleString('pt-BR'); }catch(
 async function chamar(metodo, url, corpo){
   const r = await fetch(url, {
     method: metodo,
-    headers: { 'Authorization': 'Bearer ' + tok(), 'Content-Type': 'application/json' },
+    headers: { 'Authorization': 'Bearer ' + tok(), 'X-Admin-Operador': operador(),
+      'Content-Type': 'application/json' },
     body: corpo ? JSON.stringify(corpo) : undefined
   });
   if (r.status === 401){ aviso('Token inválido. Confira o ADMIN_TOKEN.', false); throw new Error('401'); }
@@ -230,26 +234,30 @@ async function chamar(metodo, url, corpo){
 
 function entrar(){
   const t = document.getElementById('token').value.trim();
+  const op = document.getElementById('operador').value.trim();
   if (!t){ aviso('Cole o token primeiro.', false); return; }
+  if (!op){ aviso('Informe quem está realizando a operação.', false); return; }
   sessionStorage.setItem('admtok', t);
+  sessionStorage.setItem('admoperador', op);
   carregar();
 }
-function sair(){ sessionStorage.removeItem('admtok'); document.getElementById('token').value='';
+function sair(){ sessionStorage.removeItem('admtok'); sessionStorage.removeItem('admoperador');
+  document.getElementById('token').value=''; document.getElementById('operador').value='';
   document.getElementById('painel').style.display='none'; }
 
 async function carregar(){
   if (!tok()){ aviso('Cole o token e clique em Entrar.', false); return; }
   try{
-    const [inst, mr, tent, lic, mig, saude] = await Promise.all([
+    const [inst, mr, tent, lic, mig, contexto] = await Promise.all([
       chamar('GET','/admin/instalacoes'),
       chamar('GET','/admin/municipios-revogados'),
       chamar('GET','/admin/tentativas?limite=100'),
       chamar('GET','/admin/licencas'),
       chamar('GET','/admin/migracao-legado/status'),
-      fetch('/health').then(r=>r.json()).catch(()=>({}))
+      chamar('GET','/admin/contexto')
     ]);
     document.getElementById('painel').style.display='';
-    document.getElementById('amb').textContent = saude && saude.ambiente ? ('ambiente: '+saude.ambiente) : '';
+    document.getElementById('amb').textContent = contexto && contexto.ambiente ? ('ambiente: '+contexto.ambiente) : '';
     _instalacoes = inst.instalacoes || [];
     _licencas = lic.licencas || [];
     document.getElementById('box-legado').style.display = mig.concluida ? 'none' : '';
@@ -398,7 +406,8 @@ async function revogarMunicipio(){ const ibge=document.getElementById('m_ibge').
 async function reativarMunicipio(ibgeCod){ const ibge=decodeURIComponent(ibgeCod);
   try{ await chamar('POST','/admin/reativar-municipio',{codigo_ibge:ibge}); aviso('Município reativado.', true); carregar(); }catch(e){} }
 
-if (tok()) carregar();
+if (operador()) document.getElementById('operador').value=operador();
+if (tok() && operador()) carregar();
 </script>
 </body>
 </html>

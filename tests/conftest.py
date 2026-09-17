@@ -13,6 +13,9 @@ from app.contrato import payload_para_assinar
 
 KEY_ID = "teste-servico"
 ADMIN = "tok-admin-teste"
+INSTALACAO_1 = "11111111-1111-4111-8111-111111111111"
+INSTALACAO_2 = "22222222-2222-4222-8222-222222222222"
+INSTALACAO_3 = "33333333-3333-4333-8333-333333333333"
 
 
 @pytest.fixture
@@ -35,6 +38,7 @@ def cliente(monkeypatch, par_de_teste):
     pem, pub_raw = par_de_teste
     monkeypatch.setenv("LICENCA_PRIVADA_PEM", pem.decode("utf-8"))
     monkeypatch.setenv("LICENCA_KEY_ID", KEY_ID)
+    monkeypatch.setenv("LICENCA_PUBLICA_B64_ESPERADA", base64.b64encode(pub_raw).decode("ascii"))
     monkeypatch.setenv("LICENCA_AMBIENTE", "homologacao")
     monkeypatch.setenv("ADMIN_TOKEN", ADMIN)
     monkeypatch.delenv("DATABASE_URL", raising=False)

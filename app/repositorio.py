@@ -17,7 +17,7 @@ from __future__ import annotations
 import copy
 import json
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional, Protocol
 
 
@@ -46,6 +46,12 @@ class Repositorio(Protocol):
                                  detalhes: str, quando: datetime) -> None: ...
     def listar_eventos_licenca(self, licenca_id: str,
                                limite: int = 100) -> list[dict[str, Any]]: ...
+    def registrar_auditoria_admin(self, operador: str, acao: str, alvo: str,
+                                  resultado: str, detalhes: str,
+                                  quando: datetime) -> None: ...
+    def listar_auditoria_admin(self, limite: int = 100) -> list[dict[str, Any]]: ...
+    def aplicar_retencao(self, agora: datetime, tentativas_dias: int,
+                         auditoria_dias: int) -> dict[str, int]: ...
     def obter_migracao_dados(self, migracao_id: str) -> Optional[dict[str, Any]]: ...
     def migracao_legado_concluida(self) -> bool: ...
     def aplicar_migracao_legada(self, migracao_id: str, fingerprint: str,
@@ -62,6 +68,7 @@ class RepositorioMemoria:
         self._inst: dict[str, dict[str, Any]] = {}
         self._licencas: dict[str, dict[str, Any]] = {}
         self._eventos: list[dict[str, Any]] = []
+        self._auditoria_admin: list[dict[str, Any]] = []
         self._migracoes_dados: dict[str, dict[str, Any]] = {}
         self._munic_revogados: set[str] = set()
         self.tentativas: list[dict[str, Any]] = []
@@ -214,6 +221,49 @@ class RepositorioMemoria:
         eventos = [e for e in reversed(self._eventos) if e["licenca_id"] == licenca_id]
         return [dict(e) for e in eventos[: max(1, int(limite))]]
 
+    def registrar_auditoria_admin(self, operador: str, acao: str, alvo: str,
+                                  resultado: str, detalhes: str,
+                                  quando: datetime) -> None:
+        with self._lock:
+            self._auditoria_admin.append({
+                "operador": operador, "acao": acao, "alvo": alvo,
+                "resultado": resultado, "detalhes": detalhes,
+                "quando": quando.isoformat(),
+            })
+
+    def listar_auditoria_admin(self, limite: int = 100) -> list[dict[str, Any]]:
+        return [dict(e) for e in reversed(self._auditoria_admin[-max(1, int(limite)):])]
+
+    @staticmethod
+    def _data_evento(valor: Any) -> datetime:
+        return valor if isinstance(valor, datetime) else datetime.fromisoformat(str(valor))
+
+    def aplicar_retencao(self, agora: datetime, tentativas_dias: int,
+                         auditoria_dias: int) -> dict[str, int]:
+        corte_tentativas = agora - timedelta(days=tentativas_dias)
+        corte_auditoria = agora - timedelta(days=auditoria_dias)
+        with self._lock:
+            antes_t = len(self.tentativas)
+            antes_e = len(self._eventos)
+            antes_a = len(self._auditoria_admin)
+            self.tentativas = [
+                item for item in self.tentativas
+                if self._data_evento(item["quando"]) >= corte_tentativas
+            ]
+            self._eventos = [
+                item for item in self._eventos
+                if self._data_evento(item["quando"]) >= corte_auditoria
+            ]
+            self._auditoria_admin = [
+                item for item in self._auditoria_admin
+                if self._data_evento(item["quando"]) >= corte_auditoria
+            ]
+        return {
+            "tentativas": antes_t - len(self.tentativas),
+            "eventos_licenca": antes_e - len(self._eventos),
+            "auditoria_admin": antes_a - len(self._auditoria_admin),
+        }
+
     def obter_migracao_dados(self, migracao_id: str) -> Optional[dict[str, Any]]:
         reg = self._migracoes_dados.get(migracao_id)
         return copy.deepcopy(reg) if reg else None
@@ -362,7 +412,7 @@ class RepositorioPostgres:
             url = "postgresql+psycopg://" + url[len("postgres://"):]
         elif url.startswith("postgresql://"):
             url = "postgresql+psycopg://" + url[len("postgresql://"):]
-        self._engine = create_engine(url, pool_pre_ping=True)
+        self._engine = create_engine(url, pool_pre_ping=True, pool_recycle=300)
         self._criar_esquema()
 
     def _criar_esquema(self) -> None:
@@ -620,6 +670,48 @@ class RepositorioPostgres:
             ), {"l": licenca_id, "n": max(1, int(limite))}).mappings().all()
         return [self._datas_iso(dict(r)) for r in rows]
 
+    def registrar_auditoria_admin(self, operador: str, acao: str, alvo: str,
+                                  resultado: str, detalhes: str,
+                                  quando: datetime) -> None:
+        from sqlalchemy import text
+        with self._engine.begin() as con:
+            con.execute(text("""INSERT INTO auditoria_admin
+                (operador, acao, alvo, resultado, detalhes, quando)
+                VALUES (:o, :a, :al, :r, :d, :q)"""), {
+                "o": operador, "a": acao, "al": alvo,
+                "r": resultado, "d": detalhes, "q": quando,
+            })
+
+    def listar_auditoria_admin(self, limite: int = 100) -> list[dict[str, Any]]:
+        from sqlalchemy import text
+        with self._engine.connect() as con:
+            rows = con.execute(text("""SELECT operador, acao, alvo, resultado, detalhes, quando
+                FROM auditoria_admin ORDER BY quando DESC LIMIT :n"""), {
+                "n": max(1, int(limite)),
+            }).mappings().all()
+        return [self._datas_iso(dict(r)) for r in rows]
+
+    def aplicar_retencao(self, agora: datetime, tentativas_dias: int,
+                         auditoria_dias: int) -> dict[str, int]:
+        from sqlalchemy import text
+        corte_tentativas = agora - timedelta(days=tentativas_dias)
+        corte_auditoria = agora - timedelta(days=auditoria_dias)
+        with self._engine.begin() as con:
+            tentativas = con.execute(
+                text("DELETE FROM tentativas WHERE quando < :c"), {"c": corte_tentativas}
+            ).rowcount or 0
+            eventos = con.execute(
+                text("DELETE FROM eventos_licenca WHERE quando < :c"), {"c": corte_auditoria}
+            ).rowcount or 0
+            auditoria = con.execute(
+                text("DELETE FROM auditoria_admin WHERE quando < :c"), {"c": corte_auditoria}
+            ).rowcount or 0
+        return {
+            "tentativas": int(tentativas),
+            "eventos_licenca": int(eventos),
+            "auditoria_admin": int(auditoria),
+        }
+
     def obter_migracao_dados(self, migracao_id: str) -> Optional[dict[str, Any]]:
         from sqlalchemy import text
         with self._engine.connect() as con:
@@ -821,10 +913,11 @@ class RepositorioPostgres:
 
     def pronto(self) -> bool:
         from sqlalchemy import text
+        from app.migracoes_schema import schema_atual
         try:
             with self._engine.connect() as con:
                 con.execute(text("SELECT 1"))
-            return True
+            return schema_atual(self._engine)
         except Exception:
             return False
 

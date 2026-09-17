@@ -13,9 +13,29 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
+from app.validacao import (
+    MAX_AUDITORES,
+    MAX_DIAS_OFFLINE,
+    MAX_INSTALACOES_ATIVAS,
+    EntradaInvalida,
+    codigo_ibge,
+    inteiro,
+    uuid_canonico,
+    validar_campos,
+    versao,
+)
+
 
 STATUS_LICENCA = frozenset({"ativa", "suspensa", "revogada", "expirada", "pendente"})
 STATUS_INSTALACAO = frozenset({"ativa", "contingencia", "revogada", "substituida"})
+CAMPOS_CRIACAO = frozenset({
+    "licenca_id", "codigo_ibge", "status", "inicio_em", "expira_em",
+    "max_auditores", "max_instalacoes_ativas", "dias_offline", "versao_minima",
+})
+CAMPOS_ATUALIZACAO = frozenset({
+    "status", "inicio_em", "expira_em", "max_auditores",
+    "max_instalacoes_ativas", "dias_offline", "versao_minima",
+})
 
 
 class LicencaInvalida(ValueError):
@@ -27,15 +47,19 @@ def agora_utc() -> datetime:
 
 
 def parse_data(valor: Any, campo: str) -> datetime:
-    texto = str(valor or "").strip()
+    if not isinstance(valor, str):
+        raise LicencaInvalida(f"{campo} deve usar data/hora ISO 8601 com fuso horário")
+    texto = valor.strip()
+    if texto != valor:
+        raise LicencaInvalida(f"{campo} não pode conter espaços nas extremidades")
     if not texto:
         raise LicencaInvalida(f"{campo} é obrigatório")
     try:
         dt = datetime.fromisoformat(texto.replace("Z", "+00:00"))
     except ValueError as exc:
         raise LicencaInvalida(f"{campo} deve usar data/hora ISO 8601") from exc
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        raise LicencaInvalida(f"{campo} deve informar o fuso horário")
     return dt.astimezone(timezone.utc)
 
 
@@ -43,28 +67,36 @@ def iso(valor: datetime) -> str:
     return valor.astimezone(timezone.utc).isoformat()
 
 
-def _inteiro_positivo(valor: Any, campo: str, padrao: Optional[int] = None) -> int:
-    if valor in (None, "") and padrao is not None:
-        return padrao
+def _inteiro_positivo(valor: Any, campo: str, *, maximo: int) -> int:
     try:
-        numero = int(valor)
-    except (TypeError, ValueError) as exc:
-        raise LicencaInvalida(f"{campo} deve ser um número inteiro") from exc
-    if numero < 1:
-        raise LicencaInvalida(f"{campo} deve ser maior que zero")
+        numero = inteiro(valor, campo, maximo=maximo)
+    except EntradaInvalida as exc:
+        raise LicencaInvalida(str(exc)) from exc
+    assert numero is not None
     return numero
 
 
 def normalizar_criacao(corpo: dict[str, Any], agora: Optional[datetime] = None) -> dict[str, Any]:
+    try:
+        validar_campos(
+            corpo, CAMPOS_CRIACAO,
+            obrigatorios={"codigo_ibge", "inicio_em", "expira_em", "max_auditores"},
+        )
+    except EntradaInvalida as exc:
+        raise LicencaInvalida(str(exc)) from exc
     agora = (agora or agora_utc()).astimezone(timezone.utc)
-    ibge = str(corpo.get("codigo_ibge") or "").strip()
-    if not ibge:
-        raise LicencaInvalida("codigo_ibge é obrigatório")
+    try:
+        ibge = codigo_ibge(corpo.get("codigo_ibge"))
+    except EntradaInvalida as exc:
+        raise LicencaInvalida(str(exc)) from exc
     inicio = parse_data(corpo.get("inicio_em"), "inicio_em")
     fim = parse_data(corpo.get("expira_em"), "expira_em")
     if fim <= inicio:
         raise LicencaInvalida("expira_em deve ser posterior a inicio_em")
-    status = str(corpo.get("status") or "pendente").strip().lower()
+    status_bruto = corpo["status"] if "status" in corpo else "pendente"
+    if not isinstance(status_bruto, str):
+        raise LicencaInvalida("status deve ser texto")
+    status = status_bruto.strip().lower()
     if status not in STATUS_LICENCA:
         raise LicencaInvalida(f"status deve ser um de {sorted(STATUS_LICENCA)}")
     return {
@@ -73,32 +105,53 @@ def normalizar_criacao(corpo: dict[str, Any], agora: Optional[datetime] = None) 
         "status": status,
         "inicio_em": iso(inicio),
         "expira_em": iso(fim),
-        "max_auditores": _inteiro_positivo(corpo.get("max_auditores"), "max_auditores"),
-        "max_instalacoes_ativas": _inteiro_positivo(
-            corpo.get("max_instalacoes_ativas"), "max_instalacoes_ativas", 1
+        "max_auditores": _inteiro_positivo(
+            corpo.get("max_auditores"), "max_auditores", maximo=MAX_AUDITORES
         ),
-        "dias_offline": _inteiro_positivo(corpo.get("dias_offline"), "dias_offline", 7),
-        "versao_minima": str(corpo.get("versao_minima") or "1.0.0").strip(),
+        "max_instalacoes_ativas": _inteiro_positivo(
+            corpo["max_instalacoes_ativas"] if "max_instalacoes_ativas" in corpo else 1,
+            "max_instalacoes_ativas",
+            maximo=MAX_INSTALACOES_ATIVAS,
+        ),
+        "dias_offline": _inteiro_positivo(
+            corpo["dias_offline"] if "dias_offline" in corpo else 7,
+            "dias_offline", maximo=MAX_DIAS_OFFLINE,
+        ),
+        "versao_minima": _versao_minima(corpo.get("versao_minima", "1.0.0")),
         "criada_em": iso(agora),
         "atualizada_em": iso(agora),
     }
 
 
 def normalizar_atualizacao(
-    existente: dict[str, Any], corpo: dict[str, Any], agora: Optional[datetime] = None
+    existente: dict[str, Any], corpo: dict[str, Any], agora: Optional[datetime] = None,
+    *, confirmar_encurtamento: bool = False,
 ) -> dict[str, Any]:
     if not existente:
         raise LicencaInvalida("licença não encontrada")
-    proibidos = {"licenca_id", "codigo_ibge", "criada_em"}.intersection(corpo)
+    proibidos = {"licenca_id", "codigo_ibge", "criada_em", "atualizada_em"}.intersection(corpo)
     if proibidos:
         raise LicencaInvalida(f"campos imutáveis: {sorted(proibidos)}")
-    mesclado = dict(existente)
-    for campo in (
-        "status", "inicio_em", "expira_em", "max_auditores",
-        "max_instalacoes_ativas", "dias_offline", "versao_minima",
-    ):
-        if campo in corpo:
-            mesclado[campo] = corpo[campo]
+    try:
+        validar_campos(corpo, CAMPOS_ATUALIZACAO)
+    except EntradaInvalida as exc:
+        raise LicencaInvalida(str(exc)) from exc
+    if not corpo:
+        raise LicencaInvalida("informe ao menos um campo para atualizar")
+    if "expira_em" in corpo:
+        novo_fim = parse_data(corpo["expira_em"], "expira_em")
+        if existente.get("expira_em"):
+            fim_atual = parse_data(existente.get("expira_em"), "expira_em atual")
+            if novo_fim < fim_atual and not confirmar_encurtamento:
+                raise LicencaInvalida(
+                    "reduzir expira_em exige confirmar_encurtamento_vigencia=true"
+                )
+    mesclado = {
+        campo: existente.get(campo)
+        for campo in CAMPOS_CRIACAO
+        if campo not in {"licenca_id", "codigo_ibge"}
+    }
+    mesclado.update(corpo)
     # Reutiliza a validação de criação sem trocar identidade/município.
     validado = normalizar_criacao({
         **mesclado,
@@ -110,10 +163,24 @@ def normalizar_atualizacao(
 
 
 def normalizar_instalacao(corpo: dict[str, Any]) -> dict[str, str]:
-    instalacao_id = str(corpo.get("instalacao_id") or "").strip()
-    if not instalacao_id:
-        raise LicencaInvalida("instalacao_id é obrigatório")
-    status = str(corpo.get("status") or "ativa").strip().lower()
+    try:
+        validar_campos(
+            corpo, {"instalacao_id", "status"}, obrigatorios={"instalacao_id"}
+        )
+        instalacao_id = uuid_canonico(corpo.get("instalacao_id"))
+    except EntradaInvalida as exc:
+        raise LicencaInvalida(str(exc)) from exc
+    status_bruto = corpo["status"] if "status" in corpo else "ativa"
+    if not isinstance(status_bruto, str):
+        raise LicencaInvalida("status deve ser texto")
+    status = status_bruto.strip().lower()
     if status not in STATUS_INSTALACAO:
         raise LicencaInvalida(f"status deve ser um de {sorted(STATUS_INSTALACAO)}")
     return {"instalacao_id": instalacao_id, "status": status}
+
+
+def _versao_minima(valor: Any) -> str:
+    try:
+        return versao(valor, "versao_minima")
+    except EntradaInvalida as exc:
+        raise LicencaInvalida(str(exc)) from exc

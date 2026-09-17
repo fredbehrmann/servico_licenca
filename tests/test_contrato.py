@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 from app import contrato
+from tests.conftest import INSTALACAO_1
 
 
 def test_canonico_ordena_e_compacta():
@@ -21,16 +22,23 @@ def test_payload_remove_assinatura():
 
 
 def test_extrair_requisicao_ok():
-    corpo = {"instalacao_id": "i", "codigo_ibge": "2927408", "versao_app": "1.0.0",
-             "nonce": "n", "extra": "ignorado"}
+    corpo = {"instalacao_id": INSTALACAO_1, "codigo_ibge": "2927408",
+             "versao_app": "1.0.0", "nonce": "n"}
     req = contrato.extrair_requisicao(corpo)
     assert set(req) == contrato.CAMPOS_REQUISICAO
-    assert "extra" not in req
+
+
+def test_extrair_requisicao_recusa_campo_extra():
+    corpo = {"instalacao_id": INSTALACAO_1, "codigo_ibge": "2927408",
+             "versao_app": "1.0.0", "nonce": "n", "extra": "recusado"}
+    with pytest.raises(ValueError, match="não permitidos"):
+        contrato.extrair_requisicao(corpo)
 
 
 @pytest.mark.parametrize("faltando", ["instalacao_id", "codigo_ibge", "versao_app", "nonce"])
 def test_extrair_requisicao_recusa_campo_ausente(faltando):
-    corpo = {"instalacao_id": "i", "codigo_ibge": "c", "versao_app": "v", "nonce": "n"}
+    corpo = {"instalacao_id": INSTALACAO_1, "codigo_ibge": "2927408",
+             "versao_app": "1.0.0", "nonce": "n"}
     corpo[faltando] = ""
     with pytest.raises(ValueError):
         contrato.extrair_requisicao(corpo)

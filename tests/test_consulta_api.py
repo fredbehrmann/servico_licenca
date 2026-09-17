@@ -5,9 +5,9 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from tests.conftest import ADMIN, KEY_ID, verifica_assinatura
+from tests.conftest import ADMIN, INSTALACAO_1, KEY_ID, verifica_assinatura
 
-_REQ = {"instalacao_id": "inst-1", "codigo_ibge": "2927408",
+_REQ = {"instalacao_id": INSTALACAO_1, "codigo_ibge": "2927408",
         "versao_app": "1.0.0", "nonce": "nonce-xyz"}
 
 
@@ -15,7 +15,7 @@ def _autoriza(cliente):
     c, _, _ = cliente
     r = c.post("/admin/autorizar",
                headers={"Authorization": f"Bearer {ADMIN}"},
-               json={"instalacao_id": "inst-1", "codigo_ibge": "2927408", "max_usuarios": 5})
+               json={"instalacao_id": INSTALACAO_1, "codigo_ibge": "2927408", "max_usuarios": 5})
     assert r.status_code == 200
 
 
@@ -51,7 +51,7 @@ def test_mesma_instalacao_com_outro_municipio_e_recusada_sem_vazar_cadastro(clie
     corpo = r.json()
     assert corpo["status"] == "instalacao_nao_autorizada"
     assert corpo["codigo_ibge"] == "3550308"  # vínculo da requisição continua verificável
-    assert corpo["instalacao_id"] == "inst-1"
+    assert corpo["instalacao_id"] == INSTALACAO_1
     assert corpo["nonce"] == "nonce-outro-ibge"
     assert corpo["max_usuarios"] is None
     assert "2927408" not in r.text             # não revela o município cadastrado
@@ -61,7 +61,7 @@ def test_mesma_instalacao_com_outro_municipio_e_recusada_sem_vazar_cadastro(clie
         "/admin/tentativas",
         headers={"Authorization": f"Bearer {ADMIN}"},
     ).json()["tentativas"]
-    assert tentativas[0]["instalacao_id"] == "inst-1"
+    assert tentativas[0]["instalacao_id"] == INSTALACAO_1
     assert tentativas[0]["codigo_ibge"] == "3550308"
     assert tentativas[0]["status"] == "instalacao_nao_autorizada"
 
@@ -73,9 +73,12 @@ def test_campo_ausente_da_400(cliente):
 
 
 def test_rate_limit_429(monkeypatch, par_de_teste):
-    pem, _ = par_de_teste
+    pem, pub = par_de_teste
     monkeypatch.setenv("LICENCA_PRIVADA_PEM", pem.decode("utf-8"))
     monkeypatch.setenv("LICENCA_KEY_ID", KEY_ID)
+    monkeypatch.setenv("LICENCA_AMBIENTE", "homologacao")
+    import base64
+    monkeypatch.setenv("LICENCA_PUBLICA_B64_ESPERADA", base64.b64encode(pub).decode("ascii"))
     monkeypatch.setenv("ADMIN_TOKEN", ADMIN)
     monkeypatch.setenv("LICENCA_RATE_MAX", "2")
     monkeypatch.delenv("DATABASE_URL", raising=False)

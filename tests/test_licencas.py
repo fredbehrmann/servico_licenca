@@ -10,13 +10,13 @@ import pytest
 from app import licencas
 from app.repositorio import RepositorioMemoria
 from app.servico import Config, decidir
-from tests.conftest import ADMIN
+from tests.conftest import ADMIN, INSTALACAO_1, INSTALACAO_2
 
 
 _AGORA = datetime(2026, 9, 16, 12, tzinfo=timezone.utc)
 _IBGE = "2927408"
 _REQ = {
-    "instalacao_id": "inst-contratual-1", "codigo_ibge": _IBGE,
+    "instalacao_id": INSTALACAO_1, "codigo_ibge": _IBGE,
     "versao_app": "1.0.0", "nonce": "n-contrato",
 }
 _H = {"Authorization": f"Bearer {ADMIN}"}
@@ -58,12 +58,43 @@ def test_resposta_usa_vigencia_e_limites_do_contrato():
     assert resposta["offline_ate"] == (_AGORA + timedelta(days=7)).isoformat()
 
 
+def test_licenca_antes_do_inicio_ainda_nao_autoriza():
+    inicio = _AGORA + timedelta(days=1)
+    repo = _repo_contratual(
+        inicio_em=inicio.isoformat(),
+        expira_em=(inicio + timedelta(days=365)).isoformat(),
+    )
+
+    resposta = decidir(_REQ, repo, Config(), _AGORA)
+
+    assert resposta["status"] == "instalacao_nao_autorizada"
+    assert resposta["max_usuarios"] is None
+    assert resposta["offline_ate"] is None
+
+
 def test_offline_nunca_ultrapassa_fim_contratual():
     fim = _AGORA + timedelta(hours=12)
     resposta = decidir(_REQ, _repo_contratual(expira_em=fim.isoformat()), Config(), _AGORA)
     assert resposta["status"] == "ativa"
     assert resposta["offline_ate"] == fim.isoformat()
     assert resposta["expira_em"] == fim.isoformat()
+
+
+def test_consultas_nao_renovam_a_data_final_do_contrato():
+    fim = _AGORA + timedelta(days=30)
+    repo = _repo_contratual(expira_em=fim.isoformat())
+
+    primeira = decidir(_REQ, repo, Config(), _AGORA)
+    segunda = decidir(
+        {**_REQ, "nonce": "n-consulta-posterior"},
+        repo,
+        Config(),
+        _AGORA + timedelta(days=5),
+    )
+
+    assert primeira["expira_em"] == fim.isoformat()
+    assert segunda["expira_em"] == fim.isoformat()
+    assert repo.obter_licenca("lic-1")["expira_em"] == fim.isoformat()
 
 
 def test_contrato_vencido_retorna_expirada_sem_prazo_offline():
@@ -169,10 +200,10 @@ def test_api_impede_segunda_instalacao_ativa_mas_aceita_contingencia(cliente):
         "max_auditores": 5,
     }).json()["licenca"]
     url = f"/admin/licencas/{criada['licenca_id']}/instalacoes"
-    assert c.post(url, headers=_H, json={"instalacao_id": "i-1", "status": "ativa"}).status_code == 200
-    recusada = c.post(url, headers=_H, json={"instalacao_id": "i-2", "status": "ativa"})
+    assert c.post(url, headers=_H, json={"instalacao_id": INSTALACAO_1, "status": "ativa"}).status_code == 200
+    recusada = c.post(url, headers=_H, json={"instalacao_id": INSTALACAO_2, "status": "ativa"})
     assert recusada.status_code == 400 and "limite" in recusada.json()["detail"]
-    assert c.post(url, headers=_H, json={"instalacao_id": "i-2", "status": "contingencia"}).status_code == 200
+    assert c.post(url, headers=_H, json={"instalacao_id": INSTALACAO_2, "status": "contingencia"}).status_code == 200
 
 
 def test_painel_expoe_operacoes_contratuais(cliente):

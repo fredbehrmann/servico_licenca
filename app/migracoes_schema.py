@@ -94,6 +94,20 @@ MIGRACOES = (
                resultado         TEXT NOT NULL
            )""",
     )),
+    MigracaoSchema(4, "auditoria_e_retencao", (
+        """CREATE TABLE IF NOT EXISTS auditoria_admin (
+               id        BIGSERIAL PRIMARY KEY,
+               operador  TEXT NOT NULL,
+               acao      TEXT NOT NULL,
+               alvo      TEXT NOT NULL,
+               resultado TEXT NOT NULL,
+               detalhes  TEXT NOT NULL DEFAULT '',
+               quando    TIMESTAMPTZ NOT NULL
+           )""",
+        "CREATE INDEX IF NOT EXISTS ix_tentativas_quando ON tentativas(quando)",
+        "CREATE INDEX IF NOT EXISTS ix_eventos_licenca_quando ON eventos_licenca(quando)",
+        "CREATE INDEX IF NOT EXISTS ix_auditoria_admin_quando ON auditoria_admin(quando)",
+    )),
 )
 
 
@@ -129,3 +143,18 @@ def executar_migracoes(engine) -> list[int]:
             ), {"v": migracao.versao, "n": migracao.nome, "c": migracao.checksum})
             aplicadas.append(migracao.versao)
     return aplicadas
+
+
+def schema_atual(engine) -> bool:
+    """Confirma que todas as migrações esperadas existem com o checksum correto."""
+    from sqlalchemy import text
+
+    try:
+        with engine.connect() as con:
+            linhas = con.execute(text(
+                "SELECT versao, checksum FROM migracoes_schema ORDER BY versao"
+            )).all()
+    except Exception:
+        return False
+    aplicadas = {int(versao): str(checksum) for versao, checksum in linhas}
+    return all(aplicadas.get(m.versao) == m.checksum for m in MIGRACOES)
