@@ -203,6 +203,27 @@ retorno são declarados no início do script e devem ser revisados antes de cada
 candidata. Essa homologação local não substitui a conferência do DNS, HTTPS, backup e alertas na
 infraestrutura externa.
 
+### Monitoramento do piloto
+
+Depois que todos os portões externos estiverem aprovados, o piloto pode ser acompanhado sem
+copiar identificadores, códigos municipais, nomes, e-mails ou dados fiscais:
+
+```bash
+export ADMIN_TOKEN='segredo obtido no cofre'
+export PILOTO_OPERADOR='nome do responsável'
+python scripts/monitorar_piloto.py \
+  --servico-url https://licenca.techfisco.com.br \
+  --sicof-url https://endereco-do-sicof-piloto \
+  --saida /diretorio-protegido/piloto \
+  --duracao-horas 168 --intervalo-segundos 300
+```
+
+O token só é lido do ambiente, nunca da linha de comando. O diretório recebe permissões restritas,
+amostras agregadas e um `resumo.json`. Indisponibilidade, prontidão falsa, ambiente do SICOF que
+não seja produção e falhas administrativas 5xx geram recomendação de interrupção. Faça primeiro
+uma leitura única com `--uma-vez`; só inicie o ciclo completo quando o resumo não tiver alerta
+crítico.
+
 ## Compatibilidade — NÃO DIVERGIR
 
 `app/contrato.py` (canonização + `payload_para_assinar`) é **cópia verbatim** de
