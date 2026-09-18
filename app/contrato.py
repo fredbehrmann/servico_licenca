@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.validacao import requisicao_publica
+
 VERSAO_CONTRATO = 1
 
 CAMPOS_REQUISICAO = frozenset({"instalacao_id", "codigo_ibge", "versao_app", "nonce"})
@@ -46,11 +48,5 @@ def payload_para_assinar(resposta: dict[str, Any]) -> bytes:
 
 
 def extrair_requisicao(corpo: dict[str, Any]) -> dict[str, str]:
-    """Só os quatro campos, como strings. Ignora qualquer extra recebido.
-
-    Levanta ValueError se algum dos quatro faltar ou vier vazio.
-    """
-    faltando = [c for c in CAMPOS_REQUISICAO if not str(corpo.get(c) or "").strip()]
-    if faltando:
-        raise ValueError(f"campos ausentes na requisição: {sorted(faltando)}")
-    return {c: str(corpo[c]).strip() for c in CAMPOS_REQUISICAO}
+    """Valida e devolve exatamente os quatro campos da requisição pública."""
+    return requisicao_publica(corpo)
