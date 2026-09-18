@@ -179,6 +179,30 @@ O teste de contrato local procura o SICOF no diretório irmão `../sicof`. Outra
 ser informada em `SICOF_REPO_DIR`. No GitHub Actions, o workflow baixa o cliente real, inicia
 PostgreSQL 16 e executa a suíte inteira; por isso o banco em memória não é a única barreira de CI.
 
+### Homologação ponta a ponta local
+
+O roteiro completo da Etapa 12 pode ser repetido sem usar banco, chave, token ou endereço de
+produção. O executor cria um banco temporário com prefixo `techfisco_homolog_`, gera credenciais
+exclusivas da execução, inicia o serviço e o SICOF em `127.0.0.1`, percorre os dez cenários e
+remove o banco ao final:
+
+```bash
+export TEST_DATABASE_URL='postgresql://usuario:senha@127.0.0.1:5432/postgres'
+python scripts/homologar_fluxo_local.py \
+  --evidencias /tmp/techfisco-etapa12 \
+  --responsavel 'nome de quem executou'
+```
+
+O usuário PostgreSQL precisa poder criar e excluir bancos descartáveis. O programa nunca exclui
+o banco informado em `TEST_DATABASE_URL`: ele cria outro, com nome aleatório e prefixo fechado, e
+remove somente esse banco. A saída preservada contém `resultado.json` e logs sanitizados.
+
+O teste cobre primeira ativação, vínculo municipal, assentos, papéis, redução contratual,
+expiração, renovação, suspensão, revogação, modo off-line, reinício e retorno de versão. Os refs de
+retorno são declarados no início do script e devem ser revisados antes de cada nova versão
+candidata. Essa homologação local não substitui a conferência do DNS, HTTPS, backup e alertas na
+infraestrutura externa.
+
 ## Compatibilidade — NÃO DIVERGIR
 
 `app/contrato.py` (canonização + `payload_para_assinar`) é **cópia verbatim** de
