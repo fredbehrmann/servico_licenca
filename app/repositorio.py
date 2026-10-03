@@ -179,8 +179,6 @@ class RepositorioMemoria:
             if licenca is None:
                 raise ValueError("licença não encontrada")
             atual = self._inst.get(instalacao_id)
-            if atual and atual.get("licenca_id") not in (None, licenca_id):
-                raise ValueError("instalação já pertence a outra licença")
             if status == "ativa":
                 outras = sum(
                     1 for iid, reg in self._inst.items()
@@ -611,17 +609,15 @@ class RepositorioPostgres:
                             status: str, quando: datetime) -> dict[str, Any]:
         from sqlalchemy import text
         with self._engine.begin() as con:
+            # Serializa alterações do mesmo identificador mesmo quando duas
+            # transferências concorrentes apontam para licenças diferentes.
+            con.execute(text("SELECT pg_advisory_xact_lock(hashtext(:i))"), {"i": instalacao_id})
             con.execute(text("SELECT pg_advisory_xact_lock(hashtext(:l))"), {"l": licenca_id})
             licenca = con.execute(text(
                 "SELECT codigo_ibge, max_instalacoes_ativas FROM licencas WHERE licenca_id=:l"
             ), {"l": licenca_id}).mappings().first()
             if licenca is None:
                 raise ValueError("licença não encontrada")
-            outra = con.execute(text(
-                "SELECT licenca_id FROM instalacoes WHERE instalacao_id=:i"
-            ), {"i": instalacao_id}).scalar_one_or_none()
-            if outra not in (None, licenca_id):
-                raise ValueError("instalação já pertence a outra licença")
             if status == "ativa":
                 ativas = con.execute(text(
                     "SELECT count(*) FROM instalacoes WHERE licenca_id=:l "

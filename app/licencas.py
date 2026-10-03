@@ -162,10 +162,12 @@ def normalizar_atualizacao(
     return validado
 
 
-def normalizar_instalacao(corpo: dict[str, Any]) -> dict[str, str]:
+def normalizar_instalacao(corpo: dict[str, Any]) -> dict[str, Any]:
     try:
         validar_campos(
-            corpo, {"instalacao_id", "status"}, obrigatorios={"instalacao_id"}
+            corpo,
+            {"instalacao_id", "status", "confirmar_transferencia"},
+            obrigatorios={"instalacao_id"},
         )
         instalacao_id = uuid_canonico(corpo.get("instalacao_id"))
     except EntradaInvalida as exc:
@@ -176,7 +178,14 @@ def normalizar_instalacao(corpo: dict[str, Any]) -> dict[str, str]:
     status = status_bruto.strip().lower()
     if status not in STATUS_INSTALACAO:
         raise LicencaInvalida(f"status deve ser um de {sorted(STATUS_INSTALACAO)}")
-    return {"instalacao_id": instalacao_id, "status": status}
+    confirmar = corpo.get("confirmar_transferencia", False)
+    if not isinstance(confirmar, bool):
+        raise LicencaInvalida("confirmar_transferencia deve ser verdadeiro ou falso")
+    return {
+        "instalacao_id": instalacao_id,
+        "status": status,
+        "confirmar_transferencia": confirmar,
+    }
 
 
 def _versao_minima(valor: Any) -> str:

@@ -275,6 +275,10 @@ async function carregar(){
 }
 
 function dataCurta(iso){ return iso ? String(iso).slice(0,10) : '—'; }
+function dataBrasileira(iso){
+  const partes=String(iso||'').slice(0,10).split('-');
+  return partes.length===3 ? partes[2]+'/'+partes[1]+'/'+partes[0] : 'data não informada';
+}
 function renderLicencas(){
   const tb=document.getElementById('tab-lic'); tb.innerHTML='';
   const sel=document.getElementById('v_lic'); sel.innerHTML='<option value="">selecione</option>';
@@ -325,8 +329,21 @@ async function associarInstalacao(){
   const lid=document.getElementById('v_lic').value; const iid=document.getElementById('v_inst').value.trim();
   const status=document.getElementById('v_status').value;
   if(!lid||!iid){ aviso('Selecione a licença e informe o identificador da instalação.',false); return; }
-  if(!confirm('Associar a instalação como '+status+'?'))return;
-  try{ await chamar('POST','/admin/licencas/'+encodeURIComponent(lid)+'/instalacoes',{instalacao_id:iid,status}); aviso('Instalação associada.',true); carregar(); }catch(e){}
+  const existente=_instalacoes.find(i=>String(i.instalacao_id)===iid);
+  const transferencia=!!(existente&&existente.licenca_id&&String(existente.licenca_id)!==String(lid));
+  const corpo={instalacao_id:iid,status};
+  if(transferencia){
+    const anterior=_licencas.find(l=>String(l.licenca_id)===String(existente.licenca_id));
+    const municipio=anterior&&anterior.codigo_ibge ? anterior.codigo_ibge : existente.codigo_ibge;
+    const fim=dataBrasileira(anterior&&anterior.expira_em);
+    const mensagem='Esta instalação já está associada à licença do município '+municipio+'.\\n\\n'+
+      'A licença anterior continua válida até '+fim+'.\\n\\n'+
+      'Confirma a alteração da instalação para a nova licença selecionada?';
+    if(!confirm(mensagem))return;
+    corpo.confirmar_transferencia=true;
+  }else if(!confirm('Associar a instalação como '+status+'?'))return;
+  try{ await chamar('POST','/admin/licencas/'+encodeURIComponent(lid)+'/instalacoes',corpo);
+    aviso(transferencia?'Instalação transferida para a nova licença.':'Instalação associada.',true); carregar(); }catch(e){}
 }
 async function verHistorico(idCod){
   const id=decodeURIComponent(idCod);

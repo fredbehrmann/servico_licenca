@@ -127,13 +127,18 @@ def test_contingencia_nao_autoriza_e_nao_consumiu_instalacao_ativa():
     assert resposta["status"] == "instalacao_nao_autorizada"
 
 
-def test_limite_de_instalacoes_ativas_e_vinculo_exclusivo():
+def test_limite_de_instalacoes_ativas_e_transferencia_entre_municipios():
     repo = _repo_contratual()
     with pytest.raises(ValueError, match="limite"):
         repo.associar_instalacao("inst-2", "lic-1", "ativa", _AGORA)
     repo.criar_licenca(_licenca(licenca_id="lic-2", codigo_ibge="3550308"))
-    with pytest.raises(ValueError, match="outra licença"):
-        repo.associar_instalacao(_REQ["instalacao_id"], "lic-2", "contingencia", _AGORA)
+    transferida = repo.associar_instalacao(
+        _REQ["instalacao_id"], "lic-2", "ativa", _AGORA,
+    )
+    assert transferida["licenca_id"] == "lic-2"
+    assert transferida["codigo_ibge"] == "3550308"
+    assert repo.contar_instalacoes_ativas("lic-1") == 0
+    assert repo.contar_instalacoes_ativas("lic-2") == 1
 
 
 def test_nao_cria_contrato_paralelo_para_mesmo_municipio():
@@ -206,8 +211,57 @@ def test_api_impede_segunda_instalacao_ativa_mas_aceita_contingencia(cliente):
     assert c.post(url, headers=_H, json={"instalacao_id": INSTALACAO_2, "status": "contingencia"}).status_code == 200
 
 
+@pytest.mark.parametrize("status_anterior", ["ativa", "pendente", "suspensa"])
+def test_api_transfere_instalacao_com_confirmacao_e_preserva_historico(
+    cliente, status_anterior,
+):
+    c, _, _ = cliente
+    inicio = (_AGORA - timedelta(days=1)).isoformat()
+    fim_anterior = (_AGORA + timedelta(days=30)).isoformat()
+    anterior = c.post("/admin/licencas", headers=_H, json={
+        "codigo_ibge": _IBGE, "status": status_anterior, "inicio_em": inicio,
+        "expira_em": fim_anterior, "max_auditores": 5,
+    }).json()["licenca"]
+    nova = c.post("/admin/licencas", headers=_H, json={
+        "codigo_ibge": "3550308", "status": "ativa", "inicio_em": inicio,
+        "expira_em": (_AGORA + timedelta(days=365)).isoformat(), "max_auditores": 8,
+    }).json()["licenca"]
+    url_anterior = f"/admin/licencas/{anterior['licenca_id']}/instalacoes"
+    url_nova = f"/admin/licencas/{nova['licenca_id']}/instalacoes"
+    assert c.post(url_anterior, headers=_H, json={
+        "instalacao_id": INSTALACAO_1, "status": "ativa",
+    }).status_code == 200
+
+    sem_confirmar = c.post(url_nova, headers=_H, json={
+        "instalacao_id": INSTALACAO_1, "status": "ativa",
+    })
+    assert sem_confirmar.status_code == 409
+    assert fim_anterior in sem_confirmar.json()["detail"]
+
+    confirmada = c.post(url_nova, headers=_H, json={
+        "instalacao_id": INSTALACAO_1, "status": "ativa",
+        "confirmar_transferencia": True,
+    })
+    assert confirmada.status_code == 200
+    assert confirmada.json()["transferida"] is True
+    assert confirmada.json()["licenca_anterior_id"] == anterior["licenca_id"]
+    assert confirmada.json()["instalacao"]["licenca_id"] == nova["licenca_id"]
+    assert confirmada.json()["instalacao"]["codigo_ibge"] == "3550308"
+
+    historico_anterior = c.get(
+        f"/admin/licencas/{anterior['licenca_id']}/historico", headers=_H,
+    ).json()["eventos"]
+    historico_novo = c.get(
+        f"/admin/licencas/{nova['licenca_id']}/historico", headers=_H,
+    ).json()["eventos"]
+    assert "instalacao_transferida_saida" in {e["acao"] for e in historico_anterior}
+    assert "instalacao_transferida_entrada" in {e["acao"] for e in historico_novo}
+
+
 def test_painel_expoe_operacoes_contratuais(cliente):
     c, _, _ = cliente
     texto = c.get("/admin").text
     for trecho in ("Nova licença contratual", "Associar instalação", "Renovar", "Histórico"):
         assert trecho in texto
+    assert "A licença anterior continua válida até" in texto
+    assert "confirmar_transferencia" in texto

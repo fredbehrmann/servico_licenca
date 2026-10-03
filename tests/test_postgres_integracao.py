@@ -65,10 +65,14 @@ def banco_postgres():
     admin.dispose()
 
 
-def _licenca(licenca_id: str | None = None, limite_instalacoes: int = 1) -> dict:
+def _licenca(
+    licenca_id: str | None = None,
+    limite_instalacoes: int = 1,
+    codigo_ibge: str = _IBGE,
+) -> dict:
     return {
         "licenca_id": licenca_id or str(uuid.uuid4()),
-        "codigo_ibge": _IBGE,
+        "codigo_ibge": codigo_ibge,
         "status": "ativa",
         "inicio_em": _AGORA - timedelta(days=1),
         "expira_em": _AGORA + timedelta(days=365),
@@ -143,6 +147,28 @@ def test_postgres_persiste_licenca_apos_reabrir_repositorio(banco_postgres):
         assert segundo.contar_instalacoes_ativas(licenca["licenca_id"]) == 1
     finally:
         segundo._engine.dispose()
+
+
+def test_postgres_transfere_instalacao_ativa_para_licenca_de_outro_municipio(
+    banco_postgres,
+):
+    url = banco_postgres()
+    repo = RepositorioPostgres(url)
+    anterior = repo.criar_licenca(_licenca())
+    nova = repo.criar_licenca(_licenca(codigo_ibge="3550308"))
+    instalacao_id = str(uuid.uuid4())
+    try:
+        repo.associar_instalacao(instalacao_id, anterior["licenca_id"], "ativa", _AGORA)
+        transferida = repo.associar_instalacao(
+            instalacao_id, nova["licenca_id"], "ativa", _AGORA,
+        )
+
+        assert transferida["licenca_id"] == nova["licenca_id"]
+        assert transferida["codigo_ibge"] == "3550308"
+        assert repo.contar_instalacoes_ativas(anterior["licenca_id"]) == 0
+        assert repo.contar_instalacoes_ativas(nova["licenca_id"]) == 1
+    finally:
+        repo._engine.dispose()
 
 
 def test_postgres_concorrencia_nunca_ultrapassa_limite_de_instalacoes(banco_postgres):

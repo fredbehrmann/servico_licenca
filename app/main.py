@@ -502,17 +502,57 @@ async def associar_instalacao(licenca_id: str, request: Request) -> dict[str, An
         licenca_id = _entrada_admin(validacao.uuid_canonico, licenca_id, "licenca_id")
         corpo = await _ler_objeto_json(request, limite=validacao.MAX_CORPO_ADMIN)
         vinculo = licencas.normalizar_instalacao(corpo)
+        anterior = estado.repo.obter_instalacao(vinculo["instalacao_id"])
+        licenca_anterior_id = str((anterior or {}).get("licenca_id") or "")
+        transferencia = bool(licenca_anterior_id and licenca_anterior_id != licenca_id)
+        if transferencia and not vinculo["confirmar_transferencia"]:
+            licenca_anterior = estado.repo.obter_licenca(licenca_anterior_id) or {}
+            fim_anterior = str(licenca_anterior.get("expira_em") or "não informada")
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "a instalação já pertence a outra licença; a licença anterior "
+                    f"continua válida até {fim_anterior}. Envie "
+                    "confirmar_transferencia=true para confirmar a alteração"
+                ),
+            )
         agora = datetime.now(timezone.utc)
         instalacao = estado.repo.associar_instalacao(
             vinculo["instalacao_id"], licenca_id, vinculo["status"], agora
         )
+        detalhes_vinculo = {
+            "instalacao_id": vinculo["instalacao_id"],
+            "status": vinculo["status"],
+        }
+        if transferencia:
+            estado.repo.registrar_evento_licenca(
+                licenca_anterior_id,
+                "instalacao_transferida_saida",
+                json.dumps({
+                    **detalhes_vinculo,
+                    "licenca_destino_id": licenca_id,
+                }, ensure_ascii=False, sort_keys=True),
+                agora,
+            )
         estado.repo.registrar_evento_licenca(
-            licenca_id, "instalacao_associada",
-            json.dumps(vinculo, ensure_ascii=False, sort_keys=True), agora,
+            licenca_id,
+            "instalacao_transferida_entrada" if transferencia else "instalacao_associada",
+            json.dumps({
+                **detalhes_vinculo,
+                **({"licenca_origem_id": licenca_anterior_id} if transferencia else {}),
+            }, ensure_ascii=False, sort_keys=True),
+            agora,
         )
-        _log.info("instalacao associada id=%s licenca=%s status=%s",
-                  vinculo["instalacao_id"], licenca_id, vinculo["status"])
-        return {"ok": True, "instalacao": instalacao}
+        _log.info(
+            "instalacao associada id=%s licenca=%s status=%s transferencia=%s",
+            vinculo["instalacao_id"], licenca_id, vinculo["status"], transferencia,
+        )
+        return {
+            "ok": True,
+            "instalacao": instalacao,
+            "transferida": transferencia,
+            "licenca_anterior_id": licenca_anterior_id or None,
+        }
     except (licencas.LicencaInvalida, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

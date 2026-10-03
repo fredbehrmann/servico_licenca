@@ -21,7 +21,9 @@ o startup; somente as alterações aditivas e versionadas do esquema são aplica
 - `POST /admin/licencas` — cria a licença contratual, com vigência e limites reais.
 - `PATCH /admin/licencas/{id}` — renova ou altera o estado e os limites da licença.
 - `POST /admin/licencas/{id}/instalacoes` — associa ou altera uma instalação (`ativa`,
-  `contingencia`, `revogada` ou `substituida`).
+  `contingencia`, `revogada` ou `substituida`). Uma instalação já vinculada pode ser transferida
+  para qualquer outra licença, inclusive de outro município e independentemente do estado do
+  contrato anterior, mediante `confirmar_transferencia: true`.
 - `GET /admin/licencas` e `GET /admin/licencas/{id}/historico` — consulta contratos e auditoria.
 - `POST /admin/autorizar` `{instalacao_id, codigo_ibge, max_usuarios?}` — compatibilidade com a
   allowlist antiga até sua migração na Etapa 4; não deve ser usado em novos contratos.
@@ -138,6 +140,11 @@ PY
 3. No painel `/admin`, a equipe cria a licença contratual com a vigência e os limites acordados.
 4. A equipe associa o `instalacao_id` à licença como instalação `ativa`.
 5. O administrador municipal consulta novamente; uma resposta assinada válida libera os módulos.
+
+Ao transferir uma instalação já associada, o painel mostra a data final da licença anterior e pede
+confirmação explícita. A transferência altera somente o vínculo da instalação: a licença anterior
+continua cadastrada e válida até o término de sua própria vigência. A API recusa a transferência
+sem `confirmar_transferencia: true`, evitando alterações silenciosas fora do painel.
 
 Exemplo equivalente pela API:
 
