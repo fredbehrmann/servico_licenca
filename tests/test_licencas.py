@@ -24,7 +24,8 @@ _H = {"Authorization": f"Bearer {ADMIN}"}
 
 def _licenca(**mudancas):
     corpo = {
-        "licenca_id": "lic-1", "codigo_ibge": _IBGE, "status": "ativa",
+        "licenca_id": "lic-1", "codigo_ibge": _IBGE,
+        "nome_municipio": "Salvador", "status": "ativa",
         "inicio_em": (_AGORA - timedelta(days=30)).isoformat(),
         "expira_em": (_AGORA + timedelta(days=30)).isoformat(),
         "max_auditores": 8, "max_instalacoes_ativas": 1,
@@ -47,6 +48,10 @@ def test_modelo_valida_datas_e_campos_imutaveis():
     existente = _licenca()
     with pytest.raises(licencas.LicencaInvalida, match="imutáveis"):
         licencas.normalizar_atualizacao(existente, {"codigo_ibge": "3550308"}, _AGORA)
+    atualizada = licencas.normalizar_atualizacao(
+        existente, {"nome_municipio": "  Salvador   da Bahia  "}, _AGORA,
+    )
+    assert atualizada["nome_municipio"] == "Salvador da Bahia"
 
 
 def test_resposta_usa_vigencia_e_limites_do_contrato():
@@ -137,6 +142,7 @@ def test_limite_de_instalacoes_ativas_e_transferencia_entre_municipios():
     )
     assert transferida["licenca_id"] == "lic-2"
     assert transferida["codigo_ibge"] == "3550308"
+    assert transferida["associada_em"] == _AGORA.isoformat()
     assert repo.contar_instalacoes_ativas("lic-1") == 0
     assert repo.contar_instalacoes_ativas("lic-2") == 1
 
@@ -164,12 +170,14 @@ def test_api_admin_cria_renova_associa_e_registra_historico(cliente):
     inicio = (_AGORA - timedelta(days=1)).isoformat()
     fim = (_AGORA + timedelta(days=30)).isoformat()
     criada = c.post("/admin/licencas", headers=_H, json={
-        "codigo_ibge": _IBGE, "status": "ativa", "inicio_em": inicio,
+        "codigo_ibge": _IBGE, "nome_municipio": "Salvador",
+        "status": "ativa", "inicio_em": inicio,
         "expira_em": fim, "max_auditores": 6, "max_instalacoes_ativas": 1,
         "dias_offline": 4, "versao_minima": "1.0.0",
     })
     assert criada.status_code == 200
     contrato = criada.json()["licenca"]
+    assert contrato["nome_municipio"] == "Salvador"
     licenca_id = contrato["licenca_id"]
 
     associada = c.post(
@@ -261,7 +269,12 @@ def test_api_transfere_instalacao_com_confirmacao_e_preserva_historico(
 def test_painel_expoe_operacoes_contratuais(cliente):
     c, _, _ = cliente
     texto = c.get("/admin").text
-    for trecho in ("Nova licença contratual", "Associar instalação", "Renovar", "Histórico"):
+    for trecho in (
+        "Nova licença contratual", "Associar instalação", "Renovar", "Histórico",
+        "Nome do município", "Consultar instalações de uma licença",
+        "Data e hora", "f_licenca", "f_municipio", "f_estado",
+        "_porPaginaRelacionamentos = 10",
+    ):
         assert trecho in texto
     assert "A licença anterior continua válida até" in texto
     assert "confirmar_transferencia" in texto

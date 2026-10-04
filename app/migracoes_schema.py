@@ -108,6 +108,15 @@ MIGRACOES = (
         "CREATE INDEX IF NOT EXISTS ix_eventos_licenca_quando ON eventos_licenca(quando)",
         "CREATE INDEX IF NOT EXISTS ix_auditoria_admin_quando ON auditoria_admin(quando)",
     )),
+    MigracaoSchema(5, "municipio_e_data_do_vinculo", (
+        "ALTER TABLE licencas ADD COLUMN IF NOT EXISTS nome_municipio TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE instalacoes ADD COLUMN IF NOT EXISTS associada_em TIMESTAMPTZ",
+        """UPDATE instalacoes
+           SET associada_em = COALESCE(ativada_em, revogada_em, criada_em)
+           WHERE associada_em IS NULL""",
+        "CREATE INDEX IF NOT EXISTS ix_instalacoes_licenca_estado "
+        "ON instalacoes(licenca_id, status_instalacao)",
+    )),
 )
 
 

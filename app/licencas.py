@@ -29,11 +29,11 @@ from app.validacao import (
 STATUS_LICENCA = frozenset({"ativa", "suspensa", "revogada", "expirada", "pendente"})
 STATUS_INSTALACAO = frozenset({"ativa", "contingencia", "revogada", "substituida"})
 CAMPOS_CRIACAO = frozenset({
-    "licenca_id", "codigo_ibge", "status", "inicio_em", "expira_em",
+    "licenca_id", "codigo_ibge", "nome_municipio", "status", "inicio_em", "expira_em",
     "max_auditores", "max_instalacoes_ativas", "dias_offline", "versao_minima",
 })
 CAMPOS_ATUALIZACAO = frozenset({
-    "status", "inicio_em", "expira_em", "max_auditores",
+    "nome_municipio", "status", "inicio_em", "expira_em", "max_auditores",
     "max_instalacoes_ativas", "dias_offline", "versao_minima",
 })
 
@@ -76,6 +76,19 @@ def _inteiro_positivo(valor: Any, campo: str, *, maximo: int) -> int:
     return numero
 
 
+def _nome_municipio(valor: Any) -> str:
+    if valor in (None, ""):
+        return ""
+    if not isinstance(valor, str):
+        raise LicencaInvalida("nome_municipio deve ser texto")
+    if any(ord(caractere) < 32 or ord(caractere) == 127 for caractere in valor):
+        raise LicencaInvalida("nome_municipio contém caracteres de controle")
+    nome = " ".join(valor.strip().split())
+    if len(nome) > 160:
+        raise LicencaInvalida("nome_municipio deve ter no máximo 160 caracteres")
+    return nome
+
+
 def normalizar_criacao(corpo: dict[str, Any], agora: Optional[datetime] = None) -> dict[str, Any]:
     try:
         validar_campos(
@@ -102,6 +115,7 @@ def normalizar_criacao(corpo: dict[str, Any], agora: Optional[datetime] = None) 
     return {
         "licenca_id": str(corpo.get("licenca_id") or uuid4()),
         "codigo_ibge": ibge,
+        "nome_municipio": _nome_municipio(corpo.get("nome_municipio")),
         "status": status,
         "inicio_em": iso(inicio),
         "expira_em": iso(fim),

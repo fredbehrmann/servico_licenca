@@ -23,6 +23,7 @@ def _corpo_licenca(**mudancas):
     agora = datetime.now(timezone.utc)
     corpo = {
         "codigo_ibge": "2927408",
+        "nome_municipio": "Salvador",
         "status": "ativa",
         "inicio_em": (agora - timedelta(days=1)).isoformat(),
         "expira_em": (agora + timedelta(days=365)).isoformat(),
@@ -138,6 +139,9 @@ def test_admin_recusa_uuid_ibge_e_campo_extra(cliente):
         {"max_instalacoes_ativas": 101},
         {"dias_offline": 31},
         {"versao_minima": "versão livre"},
+        {"nome_municipio": "x" * 161},
+        {"nome_municipio": 2927408},
+        {"nome_municipio": "Salvador\nBA"},
         {"campo_desconhecido": "valor"},
     ],
 )

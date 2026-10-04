@@ -445,7 +445,9 @@ async def criar_licenca(request: Request) -> dict[str, Any]:
         estado.repo.registrar_evento_licenca(
             criada["licenca_id"], "licenca_criada",
             json.dumps({
-                "codigo_ibge": criada["codigo_ibge"], "status": criada["status"],
+                "codigo_ibge": criada["codigo_ibge"],
+                "nome_municipio": criada.get("nome_municipio") or "",
+                "status": criada["status"],
                 "expira_em": criada["expira_em"], "max_auditores": criada["max_auditores"],
             }, ensure_ascii=False, sort_keys=True),
             agora,

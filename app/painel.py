@@ -52,7 +52,7 @@ _TEMPLATE = """<!doctype html>
   header .div{width:1px;height:26px;background:rgba(255,255,255,.22)}
   header .titulo{font-size:16px;font-weight:600}
   header .amb{margin-left:auto;font-size:12px;color:#b9c7db}
-  main{max-width:1000px;margin:0 auto;padding:22px}
+  main{max-width:1180px;margin:0 auto;padding:22px}
   .cartao{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
           padding:18px 20px;margin-bottom:16px;box-shadow:var(--shadow)}
   h2{font-size:15px;margin:0 0 14px;color:var(--navy);display:flex;align-items:center;gap:8px;font-weight:600}
@@ -92,6 +92,16 @@ _TEMPLATE = """<!doctype html>
   #aviso.ok{background:var(--ok-bg);color:var(--ok);display:block}
   #aviso.erro{background:var(--alert-bg);color:var(--alert);display:block}
   .vazio{color:var(--muted);padding:12px 4px;font-size:13px}
+  .tabela-scroll{overflow-x:auto}
+  .separador{border:0;border-top:1px solid var(--border);margin:20px 0}
+  .consulta-resumo{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+                   gap:10px;margin:14px 0}
+  .consulta-item{background:var(--surface2);border:1px solid var(--border);
+                 border-radius:var(--radius-sm);padding:11px 12px}
+  .consulta-item b{display:block;margin-bottom:5px;color:var(--navy)}
+  .consulta-item span{display:block;color:var(--muted);font-size:12px;line-height:1.5}
+  .paginacao{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:12px}
+  .paginacao span{color:var(--muted);font-size:12px}
   .rodape{color:var(--muted);font-size:12px;text-align:center;margin:6px 0 24px}
   @media(max-width:680px){.resumo{grid-template-columns:repeat(2,1fr)}}
 </style>
@@ -128,6 +138,7 @@ _TEMPLATE = """<!doctype html>
       <h2>Nova licença contratual</h2>
       <div class="linha">
         <div><label>Código IBGE</label><input id="l_ibge" placeholder="ex.: 2927408"></div>
+        <div><label>Nome do município</label><input id="l_nome" maxlength="160" placeholder="ex.: Salvador"></div>
         <div><label>Início</label><input id="l_inicio" type="date"></div>
         <div><label>Expiração</label><input id="l_fim" type="date"></div>
         <div><label>Estado inicial</label><select id="l_status"><option value="pendente">pendente</option><option value="ativa">ativa</option></select></div>
@@ -143,10 +154,10 @@ _TEMPLATE = """<!doctype html>
 
     <div class="cartao">
       <h2>Licenças contratuais</h2>
-      <table>
-        <thead><tr><th>IBGE</th><th>estado</th><th>vigência</th><th>auditores</th><th>instalações</th><th>ações</th></tr></thead>
-        <tbody id="tab-lic"><tr><td colspan="6" class="vazio">Nenhuma licença contratual.</td></tr></tbody>
-      </table>
+      <div class="tabela-scroll"><table>
+        <thead><tr><th>Município</th><th>IBGE / licença</th><th>estado</th><th>vigência</th><th>auditores</th><th>instalações</th><th>ações</th></tr></thead>
+        <tbody id="tab-lic"><tr><td colspan="7" class="vazio">Nenhuma licença contratual.</td></tr></tbody>
+      </table></div>
     </div>
 
     <div class="cartao">
@@ -158,6 +169,28 @@ _TEMPLATE = """<!doctype html>
       </div>
       <button style="margin-top:12px" onclick="associarInstalacao()">Associar instalação</button>
       <div id="historico" class="vazio"></div>
+      <hr class="separador">
+      <h2>Consultar instalações de uma licença</h2>
+      <div class="linha">
+        <div><label>Licença</label><select id="f_licenca" onchange="renderRelacionamentos(true)"><option value="">Todas</option></select></div>
+        <div><label>Município</label><select id="f_municipio" onchange="renderRelacionamentos(true)"><option value="">Todos</option></select></div>
+        <div><label>Estado da instalação</label><select id="f_estado" onchange="renderRelacionamentos(true)">
+          <option value="">Todos</option><option value="ativa">ativa</option>
+          <option value="contingencia">contingência</option><option value="revogada">revogada</option>
+          <option value="substituida">substituída</option>
+        </select></div>
+        <div style="flex:0;align-self:flex-end"><button class="sec" onclick="limparFiltrosRelacionamentos()">Limpar</button></div>
+      </div>
+      <div id="resumo-relacionamentos" class="consulta-resumo"></div>
+      <div class="tabela-scroll"><table>
+        <thead><tr><th>Município</th><th>Licença</th><th>Instalação</th><th>Estado</th><th>Data e hora</th></tr></thead>
+        <tbody id="tab-rel"><tr><td colspan="5" class="vazio">Nenhum relacionamento cadastrado.</td></tr></tbody>
+      </table></div>
+      <div class="paginacao">
+        <button id="rel-anterior" class="sec peq" onclick="mudarPaginaRelacionamentos(-1)">Anterior</button>
+        <span id="rel-pagina">Página 1 de 1</span>
+        <button id="rel-proxima" class="sec peq" onclick="mudarPaginaRelacionamentos(1)">Próxima</button>
+      </div>
     </div>
 
     <div class="cartao" id="box-legado">
@@ -206,6 +239,8 @@ _TEMPLATE = """<!doctype html>
 <script>
 let _instalacoes = [];
 let _licencas = [];
+let _paginaRelacionamentos = 1;
+const _porPaginaRelacionamentos = 10;
 function tok(){ return sessionStorage.getItem('admtok') || ''; }
 function operador(){ return sessionStorage.getItem('admoperador') || ''; }
 function aviso(msg, ok){ const a=document.getElementById('aviso'); a.textContent=msg; a.className= ok?'ok':'erro';
@@ -218,7 +253,17 @@ function tagStatus(s){
     instalacao_nao_autorizada:'t-naoautorizada'};
   return '<span class="tag '+(m[s]||'t-outro')+'">'+esc(s)+'</span>';
 }
-function quando(iso){ try{ return new Date(iso).toLocaleString('pt-BR'); }catch(e){ return esc(iso); } }
+function quando(iso){
+  if(!iso)return '—';
+  const data=new Date(iso);
+  return Number.isNaN(data.getTime()) ? '—' : data.toLocaleString('pt-BR');
+}
+function nomeMunicipio(licenca){
+  return licenca&&licenca.nome_municipio ? licenca.nome_municipio : 'Nome não informado';
+}
+function rotuloLicenca(licenca){
+  return nomeMunicipio(licenca)+' — '+licenca.codigo_ibge+' — '+licenca.status;
+}
 
 async function chamar(metodo, url, corpo){
   const r = await fetch(url, {
@@ -268,6 +313,8 @@ async function carregar(){
     document.getElementById('r-munic').textContent = (mr.codigos||[]).length;
     renderInstalacoes();
     renderLicencas();
+    popularFiltrosRelacionamentos();
+    renderRelacionamentos(true);
     renderMunicipios(mr.codigos||[]);
     renderTentativas(tent.tentativas||[]);
     aviso('Carregado.', true);
@@ -282,18 +329,20 @@ function dataBrasileira(iso){
 function renderLicencas(){
   const tb=document.getElementById('tab-lic'); tb.innerHTML='';
   const sel=document.getElementById('v_lic'); sel.innerHTML='<option value="">selecione</option>';
-  if(!_licencas.length){ tb.innerHTML='<tr><td colspan="6" class="vazio">Nenhuma licença contratual.</td></tr>'; return; }
+  if(!_licencas.length){ tb.innerHTML='<tr><td colspan="7" class="vazio">Nenhuma licença contratual.</td></tr>'; return; }
   for(const l of _licencas){
     const id=arg(l.licenca_id);
     const op=document.createElement('option'); op.value=l.licenca_id;
-    op.textContent=l.codigo_ibge+' — '+l.status; sel.appendChild(op);
+    op.textContent=rotuloLicenca(l); sel.appendChild(op);
     const acoes='<button class="sec peq" onclick="renovarLicenca(\\''+id+'\\')">Renovar</button> '+
+      '<button class="sec peq" onclick="editarNomeMunicipio(\\''+id+'\\')">Nome</button> '+
       '<button class="sec peq" onclick="alterarStatusLicenca(\\''+id+'\\',\\'ativa\\')">Ativar</button> '+
       '<button class="sec peq" onclick="alterarStatusLicenca(\\''+id+'\\',\\'suspensa\\')">Suspender</button> '+
       '<button class="perigo peq" onclick="alterarStatusLicenca(\\''+id+'\\',\\'revogada\\')">Revogar</button> '+
       '<button class="sec peq" onclick="verHistorico(\\''+id+'\\')">Histórico</button>';
     const tr=document.createElement('tr');
-    tr.innerHTML='<td>'+esc(l.codigo_ibge)+'<br><span class="cod">'+esc(l.licenca_id)+'</span></td>'+
+    tr.innerHTML='<td>'+esc(nomeMunicipio(l))+'</td>'+
+      '<td>'+esc(l.codigo_ibge)+'<br><span class="cod">'+esc(l.licenca_id)+'</span></td>'+
       '<td>'+tagStatus(l.status)+'</td><td>'+dataCurta(l.inicio_em)+' a '+dataCurta(l.expira_em)+'</td>'+
       '<td>'+esc(l.max_auditores)+'</td><td>'+esc(l.instalacoes_ativas)+' / '+esc(l.max_instalacoes_ativas)+'</td>'+
       '<td>'+acoes+'</td>';
@@ -301,18 +350,123 @@ function renderLicencas(){
   }
 }
 
+function popularFiltrosRelacionamentos(){
+  const filtroLicenca=document.getElementById('f_licenca');
+  const filtroMunicipio=document.getElementById('f_municipio');
+  const licencaAtual=filtroLicenca.value;
+  const municipioAtual=filtroMunicipio.value;
+  filtroLicenca.innerHTML='<option value="">Todas</option>';
+  for(const l of _licencas){
+    const op=document.createElement('option');
+    op.value=l.licenca_id; op.textContent=rotuloLicenca(l); filtroLicenca.appendChild(op);
+  }
+  const municipios=new Map();
+  for(const l of _licencas){
+    const atual=municipios.get(l.codigo_ibge);
+    if(!atual||(!atual.nome_municipio&&l.nome_municipio))municipios.set(l.codigo_ibge,l);
+  }
+  filtroMunicipio.innerHTML='<option value="">Todos</option>';
+  for(const l of [...municipios.values()].sort((a,b)=>nomeMunicipio(a).localeCompare(nomeMunicipio(b),'pt-BR'))){
+    const op=document.createElement('option');
+    op.value=l.codigo_ibge; op.textContent=nomeMunicipio(l)+' — '+l.codigo_ibge;
+    filtroMunicipio.appendChild(op);
+  }
+  if([...filtroLicenca.options].some(o=>o.value===licencaAtual))filtroLicenca.value=licencaAtual;
+  if([...filtroMunicipio.options].some(o=>o.value===municipioAtual))filtroMunicipio.value=municipioAtual;
+}
+
+function estadoDaInstalacao(instalacao){
+  return instalacao.status_instalacao||(instalacao.revogada?'revogada':'ativa');
+}
+function relacionamentosFiltrados(){
+  const licenca=document.getElementById('f_licenca').value;
+  const municipio=document.getElementById('f_municipio').value;
+  const estado=document.getElementById('f_estado').value;
+  return _instalacoes.filter(i=>i.licenca_id)
+    .filter(i=>!licenca||String(i.licenca_id)===licenca)
+    .filter(i=>!municipio||String(i.codigo_ibge)===municipio)
+    .filter(i=>!estado||estadoDaInstalacao(i)===estado)
+    .sort((a,b)=>String(b.associada_em||'').localeCompare(String(a.associada_em||'')));
+}
+function renderResumoRelacionamentos(relacionamentos){
+  const alvo=document.getElementById('resumo-relacionamentos');
+  const licenca=document.getElementById('f_licenca').value;
+  const municipio=document.getElementById('f_municipio').value;
+  const idsVisiveis=new Set(relacionamentos.map(i=>String(i.licenca_id)));
+  const filtradas=_licencas.filter(l=>(!licenca||String(l.licenca_id)===licenca)&&
+    (!municipio||String(l.codigo_ibge)===municipio)&&
+    (!document.getElementById('f_estado').value||idsVisiveis.has(String(l.licenca_id))));
+  if(!filtradas.length){
+    alvo.innerHTML='<div class="vazio">Nenhuma licença corresponde aos filtros informados.</div>';
+    return;
+  }
+  alvo.innerHTML=filtradas.map(l=>'<div class="consulta-item"><b>'+esc(nomeMunicipio(l))+'</b>'+
+    '<span>IBGE: '+esc(l.codigo_ibge)+'</span><span class="cod">Licença: '+esc(l.licenca_id)+'</span>'+
+    '<span>Estado: '+esc(l.status)+'</span><span>Vigência: '+esc(dataCurta(l.inicio_em))+
+    ' a '+esc(dataCurta(l.expira_em))+'</span><span>Auditores: '+esc(l.max_auditores)+
+    ' · Instalações: '+esc(l.instalacoes_ativas)+' / '+esc(l.max_instalacoes_ativas)+'</span>'+
+    '<span>Uso sem internet: '+esc(l.dias_offline)+' dia(s) · Versão mínima: '+
+    esc(l.versao_minima)+'</span></div>').join('');
+}
+function renderRelacionamentos(reiniciar){
+  if(reiniciar)_paginaRelacionamentos=1;
+  const relacionamentos=relacionamentosFiltrados();
+  const paginas=Math.max(1,Math.ceil(relacionamentos.length/_porPaginaRelacionamentos));
+  _paginaRelacionamentos=Math.min(Math.max(1,_paginaRelacionamentos),paginas);
+  const inicio=(_paginaRelacionamentos-1)*_porPaginaRelacionamentos;
+  const pagina=relacionamentos.slice(inicio,inicio+_porPaginaRelacionamentos);
+  const tb=document.getElementById('tab-rel'); tb.innerHTML='';
+  if(!pagina.length){
+    tb.innerHTML='<tr><td colspan="5" class="vazio">Nenhum relacionamento corresponde aos filtros.</td></tr>';
+  }else{
+    for(const i of pagina){
+      const l=_licencas.find(item=>String(item.licenca_id)===String(i.licenca_id));
+      const tr=document.createElement('tr');
+      tr.innerHTML='<td>'+esc(nomeMunicipio(l))+'<br><span class="cod">'+esc(i.codigo_ibge)+'</span></td>'+
+        '<td class="cod">'+esc(i.licenca_id)+'</td><td class="cod">'+esc(i.instalacao_id)+'</td>'+
+        '<td>'+tagStatus(estadoDaInstalacao(i))+'</td><td>'+esc(quando(i.associada_em))+'</td>';
+      tb.appendChild(tr);
+    }
+  }
+  document.getElementById('rel-pagina').textContent='Página '+_paginaRelacionamentos+' de '+paginas+
+    ' · '+relacionamentos.length+' relacionamento(s)';
+  document.getElementById('rel-anterior').disabled=_paginaRelacionamentos<=1;
+  document.getElementById('rel-proxima').disabled=_paginaRelacionamentos>=paginas;
+  renderResumoRelacionamentos(relacionamentos);
+}
+function mudarPaginaRelacionamentos(delta){
+  _paginaRelacionamentos+=delta;
+  renderRelacionamentos(false);
+}
+function limparFiltrosRelacionamentos(){
+  document.getElementById('f_licenca').value='';
+  document.getElementById('f_municipio').value='';
+  document.getElementById('f_estado').value='';
+  renderRelacionamentos(true);
+}
+
 async function criarLicenca(){
   const ibge=document.getElementById('l_ibge').value.trim();
+  const nome=document.getElementById('l_nome').value.trim();
   const ini=document.getElementById('l_inicio').value; const fim=document.getElementById('l_fim').value;
-  if(!ibge||!ini||!fim){ aviso('Informe IBGE, início e expiração.', false); return; }
-  const corpo={codigo_ibge:ibge,status:document.getElementById('l_status').value,
+  if(!ibge||!nome||!ini||!fim){ aviso('Informe município, IBGE, início e expiração.', false); return; }
+  const corpo={codigo_ibge:ibge,nome_municipio:nome,status:document.getElementById('l_status').value,
     inicio_em:ini+'T00:00:00+00:00',expira_em:fim+'T23:59:59+00:00',
     max_auditores:parseInt(document.getElementById('l_aud').value,10),
     max_instalacoes_ativas:parseInt(document.getElementById('l_inst').value,10),
     dias_offline:parseInt(document.getElementById('l_off').value,10),
     versao_minima:document.getElementById('l_ver').value.trim()};
-  if(!confirm('Criar a licença do município '+ibge+' com término em '+fim+'?'))return;
+  if(!confirm('Criar a licença de '+nome+' ('+ibge+') com término em '+fim+'?'))return;
   try{ await chamar('POST','/admin/licencas',corpo); aviso('Licença criada.',true); carregar(); }catch(e){}
+}
+async function editarNomeMunicipio(idCod){
+  const id=decodeURIComponent(idCod);
+  const atual=_licencas.find(l=>String(l.licenca_id)===id);
+  const nome=prompt('Nome do município:',atual&&atual.nome_municipio?atual.nome_municipio:'');
+  if(nome===null)return;
+  if(!nome.trim()){ aviso('Informe o nome do município.',false); return; }
+  try{ await chamar('PATCH','/admin/licencas/'+encodeURIComponent(id),{nome_municipio:nome.trim()});
+    aviso('Nome do município atualizado.',true); carregar(); }catch(e){}
 }
 async function alterarStatusLicenca(idCod,status){
   const id=decodeURIComponent(idCod);

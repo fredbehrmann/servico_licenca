@@ -55,6 +55,8 @@ Corpos administrativos possuem limite de 16 KiB e também recusam campos desconh
 devem ser ISO 8601 com fuso horário. Limites devem ser números inteiros JSON: `max_auditores` e
 `max_usuarios` ficam entre 1 e 10.000, `max_instalacoes_ativas` entre 1 e 100 e `dias_offline`
 entre 1 e 30. Texto como `"5"`, zero, valores negativos e booleanos não são convertidos.
+O nome do município é um dado administrativo opcional na API, aceita até 160 caracteres e pode
+ser atualizado sem alterar o código IBGE da licença.
 
 Reduzir `expira_em` exige confirmação explícita no mesmo PATCH:
 
@@ -145,6 +147,10 @@ Ao transferir uma instalação já associada, o painel mostra a data final da li
 confirmação explícita. A transferência altera somente o vínculo da instalação: a licença anterior
 continua cadastrada e válida até o término de sua própria vigência. A API recusa a transferência
 sem `confirmar_transferencia: true`, evitando alterações silenciosas fora do painel.
+
+O painel apresenta os relacionamentos entre licenças e instalações, com filtros por licença,
+município e estado. A listagem mostra até dez vínculos por página e usa a data da associação ou da
+alteração mais recente do vínculo.
 
 Exemplo equivalente pela API:
 

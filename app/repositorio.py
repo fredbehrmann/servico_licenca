@@ -194,6 +194,7 @@ class RepositorioMemoria:
                 "max_usuarios": None,
                 "revogada": status in {"revogada", "substituida"},
                 "status_instalacao": status,
+                "associada_em": quando.isoformat(),
                 "ativada_em": quando.isoformat() if status == "ativa" else None,
                 "revogada_em": quando.isoformat() if status in {"revogada", "substituida"} else None,
                 "ultima_consulta_em": (atual or {}).get("ultima_consulta_em"),
@@ -328,6 +329,7 @@ class RepositorioMemoria:
                             raise ValueError(f"instalação já pertence a outra licença: {iid}")
                         reg["licenca_id"] = licenca_id
                         reg["status_instalacao"] = vinculo["status"]
+                        reg["associada_em"] = quando.isoformat()
                         reg["ativada_em"] = quando.isoformat() if vinculo["status"] == "ativa" else None
                         reg["revogada_em"] = (
                             quando.isoformat() if vinculo["status"] in {"revogada", "substituida"}
@@ -422,7 +424,8 @@ class RepositorioPostgres:
         with self._engine.connect() as con:
             row = con.execute(
                 text("SELECT instalacao_id, codigo_ibge, max_usuarios, revogada, "
-                     "licenca_id, status_instalacao, ativada_em, revogada_em, ultima_consulta_em "
+                     "licenca_id, status_instalacao, associada_em, ativada_em, "
+                     "revogada_em, ultima_consulta_em "
                      "FROM instalacoes WHERE instalacao_id = :i"),
                 {"i": instalacao_id},
             ).mappings().first()
@@ -490,7 +493,8 @@ class RepositorioPostgres:
         with self._engine.connect() as con:
             rows = con.execute(
                 text("SELECT instalacao_id, codigo_ibge, max_usuarios, revogada, "
-                     "licenca_id, status_instalacao, ativada_em, revogada_em, ultima_consulta_em "
+                     "licenca_id, status_instalacao, associada_em, ativada_em, "
+                     "revogada_em, ultima_consulta_em "
                      "FROM instalacoes ORDER BY criada_em")
             ).mappings().all()
         return [dict(r) for r in rows]
@@ -550,21 +554,21 @@ class RepositorioPostgres:
                     "o município já possui uma licença em aberto; renove ou altere a existente"
                 )
             con.execute(text("""INSERT INTO licencas (
-                licenca_id, codigo_ibge, status, inicio_em, expira_em,
+                licenca_id, codigo_ibge, nome_municipio, status, inicio_em, expira_em,
                 max_auditores, max_instalacoes_ativas, dias_offline,
                 versao_minima, criada_em, atualizada_em
             ) VALUES (
-                :licenca_id, :codigo_ibge, :status, :inicio_em, :expira_em,
+                :licenca_id, :codigo_ibge, :nome_municipio, :status, :inicio_em, :expira_em,
                 :max_auditores, :max_instalacoes_ativas, :dias_offline,
                 :versao_minima, :criada_em, :atualizada_em
-            )"""), dados)
+            )"""), {**dados, "nome_municipio": str(dados.get("nome_municipio") or "")})
         return self.obter_licenca(str(dados["licenca_id"])) or dict(dados)
 
     def obter_licenca(self, licenca_id: str) -> Optional[dict[str, Any]]:
         from sqlalchemy import text
         with self._engine.connect() as con:
             row = con.execute(text(
-                "SELECT licenca_id, codigo_ibge, status, inicio_em, expira_em, "
+                "SELECT licenca_id, codigo_ibge, nome_municipio, status, inicio_em, expira_em, "
                 "max_auditores, max_instalacoes_ativas, dias_offline, versao_minima, "
                 "criada_em, atualizada_em, chave_migracao, migrada_em "
                 "FROM licencas WHERE licenca_id = :l"
@@ -574,7 +578,7 @@ class RepositorioPostgres:
     def listar_licencas(self) -> list[dict[str, Any]]:
         from sqlalchemy import text
         with self._engine.connect() as con:
-            rows = con.execute(text("""SELECT l.licenca_id, l.codigo_ibge, l.status,
+            rows = con.execute(text("""SELECT l.licenca_id, l.codigo_ibge, l.nome_municipio, l.status,
                 l.inicio_em, l.expira_em, l.max_auditores, l.max_instalacoes_ativas,
                 l.dias_offline, l.versao_minima, l.criada_em, l.atualizada_em,
                 l.chave_migracao, l.migrada_em,
@@ -597,7 +601,8 @@ class RepositorioPostgres:
                     "o limite não pode ser menor que a quantidade de instalações ativas"
                 )
             res = con.execute(text("""UPDATE licencas SET
-                status=:status, inicio_em=:inicio_em, expira_em=:expira_em,
+                nome_municipio=:nome_municipio, status=:status,
+                inicio_em=:inicio_em, expira_em=:expira_em,
                 max_auditores=:max_auditores,
                 max_instalacoes_ativas=:max_instalacoes_ativas,
                 dias_offline=:dias_offline, versao_minima=:versao_minima,
@@ -627,15 +632,17 @@ class RepositorioPostgres:
                     raise ValueError("limite de instalações ativas da licença atingido")
             con.execute(text("""INSERT INTO instalacoes (
                 instalacao_id, codigo_ibge, max_usuarios, revogada, licenca_id,
-                status_instalacao, ativada_em, revogada_em
-            ) VALUES (:i, :c, NULL, :r, :l, :s, :a, :v)
+                status_instalacao, associada_em, ativada_em, revogada_em
+            ) VALUES (:i, :c, NULL, :r, :l, :s, :q, :a, :v)
             ON CONFLICT (instalacao_id) DO UPDATE SET
                 codigo_ibge=EXCLUDED.codigo_ibge, max_usuarios=NULL,
                 revogada=EXCLUDED.revogada, licenca_id=EXCLUDED.licenca_id,
                 status_instalacao=EXCLUDED.status_instalacao,
+                associada_em=EXCLUDED.associada_em,
                 ativada_em=EXCLUDED.ativada_em, revogada_em=EXCLUDED.revogada_em"""), {
                 "i": instalacao_id, "c": licenca["codigo_ibge"], "l": licenca_id,
                 "s": status, "r": status in {"revogada", "substituida"},
+                "q": quando,
                 "a": quando if status == "ativa" else None,
                 "v": quando if status in {"revogada", "substituida"} else None,
             })
@@ -836,6 +843,7 @@ class RepositorioPostgres:
                     status = str(vinculo["status"])
                     con.execute(text("""UPDATE instalacoes SET
                         licenca_id=:l, status_instalacao=:s,
+                        associada_em=:q,
                         ativada_em=CASE WHEN :s='ativa' THEN :q ELSE NULL END,
                         revogada_em=CASE WHEN :s IN ('revogada','substituida') THEN :q ELSE NULL END
                         WHERE instalacao_id=:i"""), {

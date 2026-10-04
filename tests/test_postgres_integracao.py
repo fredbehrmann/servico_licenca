@@ -69,10 +69,12 @@ def _licenca(
     licenca_id: str | None = None,
     limite_instalacoes: int = 1,
     codigo_ibge: str = _IBGE,
+    nome_municipio: str = "Salvador",
 ) -> dict:
     return {
         "licenca_id": licenca_id or str(uuid.uuid4()),
         "codigo_ibge": codigo_ibge,
+        "nome_municipio": nome_municipio,
         "status": "ativa",
         "inicio_em": _AGORA - timedelta(days=1),
         "expira_em": _AGORA + timedelta(days=365),
@@ -96,11 +98,21 @@ def test_postgres_cria_esquema_completo_em_banco_vazio(banco_postgres):
             tabelas = set(con.execute(text(
                 "SELECT tablename FROM pg_tables WHERE schemaname='public'"
             )).scalars())
+            colunas_licencas = set(con.execute(text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name='licencas'"
+            )).scalars())
+            colunas_instalacoes = set(con.execute(text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name='instalacoes'"
+            )).scalars())
         assert versoes == [m.versao for m in migracoes_schema.MIGRACOES]
         assert {
             "licencas", "instalacoes", "tentativas", "eventos_licenca",
             "auditoria_admin", "migracoes_dados", "migracoes_schema",
         } <= tabelas
+        assert "nome_municipio" in colunas_licencas
+        assert "associada_em" in colunas_instalacoes
         assert repo.pronto() is True
     finally:
         repo._engine.dispose()
@@ -126,6 +138,7 @@ def test_postgres_migra_esquema_legado_sem_perder_instalacao(banco_postgres):
         assert registro["codigo_ibge"] == _IBGE
         assert registro["max_usuarios"] == 4
         assert registro["licenca_id"] is None
+        assert registro["associada_em"] is not None
         assert repo.pronto() is True
     finally:
         repo._engine.dispose()
@@ -143,7 +156,9 @@ def test_postgres_persiste_licenca_apos_reabrir_repositorio(banco_postgres):
     segundo = RepositorioPostgres(url)
     try:
         assert segundo.obter_licenca(licenca["licenca_id"])["max_auditores"] == 5
+        assert segundo.obter_licenca(licenca["licenca_id"])["nome_municipio"] == "Salvador"
         assert segundo.obter_instalacao(instalacao_id)["status_instalacao"] == "ativa"
+        assert segundo.obter_instalacao(instalacao_id)["associada_em"] == _AGORA
         assert segundo.contar_instalacoes_ativas(licenca["licenca_id"]) == 1
     finally:
         segundo._engine.dispose()
@@ -155,7 +170,7 @@ def test_postgres_transfere_instalacao_ativa_para_licenca_de_outro_municipio(
     url = banco_postgres()
     repo = RepositorioPostgres(url)
     anterior = repo.criar_licenca(_licenca())
-    nova = repo.criar_licenca(_licenca(codigo_ibge="3550308"))
+    nova = repo.criar_licenca(_licenca(codigo_ibge="3550308", nome_municipio="São Paulo"))
     instalacao_id = str(uuid.uuid4())
     try:
         repo.associar_instalacao(instalacao_id, anterior["licenca_id"], "ativa", _AGORA)
