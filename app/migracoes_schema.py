@@ -117,6 +117,45 @@ MIGRACOES = (
         "CREATE INDEX IF NOT EXISTS ix_instalacoes_licenca_estado "
         "ON instalacoes(licenca_id, status_instalacao)",
     )),
+    MigracaoSchema(6, "recuperacao_senha_administrativa", (
+        """CREATE TABLE IF NOT EXISTS recuperacoes_senha (
+               request_id                  TEXT PRIMARY KEY,
+               request_digest              TEXT NOT NULL,
+               installation_id             TEXT NOT NULL,
+               usuario_referencia          TEXT NOT NULL,
+               desafio_digest              TEXT NOT NULL,
+               versao_app                  TEXT NOT NULL,
+               solicitado_em               BIGINT NOT NULL,
+               solicitacao_expira_em       BIGINT NOT NULL,
+               estado                      TEXT NOT NULL,
+               operador_preparou            TEXT NOT NULL,
+               aprovador                   TEXT,
+               emitido_por                 TEXT,
+               protocolo                   TEXT NOT NULL,
+               justificativa               TEXT NOT NULL,
+               metodo_verificacao          TEXT NOT NULL,
+               canal_oficial_confirmado    BOOLEAN NOT NULL,
+               escalonamento_confirmado    BOOLEAN NOT NULL DEFAULT FALSE,
+               kid                         TEXT,
+               jti_digest                  TEXT,
+               token_digest                TEXT,
+               emitido_em                  BIGINT,
+               token_expira_em             BIGINT,
+               criado_em                   BIGINT NOT NULL,
+               atualizado_em               BIGINT NOT NULL,
+               CONSTRAINT ck_recuperacoes_senha_estado CHECK (
+                   estado IN ('preparada','aprovada','emitida','expirada','recusada')
+               )
+           )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_recuperacoes_senha_request_digest "
+        "ON recuperacoes_senha(request_digest)",
+        "CREATE INDEX IF NOT EXISTS ix_recuperacoes_senha_instalacao_criada "
+        "ON recuperacoes_senha(installation_id, criado_em DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_recuperacoes_senha_operador_criada "
+        "ON recuperacoes_senha(operador_preparou, criado_em DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_recuperacoes_senha_estado_atualizada "
+        "ON recuperacoes_senha(estado, atualizado_em DESC)",
+    )),
 )
 
 

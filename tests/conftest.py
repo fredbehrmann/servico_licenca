@@ -41,6 +41,37 @@ def cliente(monkeypatch, par_de_teste):
     monkeypatch.setenv("LICENCA_PUBLICA_B64_ESPERADA", base64.b64encode(pub_raw).decode("ascii"))
     monkeypatch.setenv("LICENCA_AMBIENTE", "homologacao")
     monkeypatch.setenv("ADMIN_TOKEN", ADMIN)
+    recuperacao_privada = Ed25519PrivateKey.generate()
+    recuperacao_pem = recuperacao_privada.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    recuperacao_publica = recuperacao_privada.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    monkeypatch.setenv("RECUPERACAO_HABILITADA", "true")
+    monkeypatch.setenv("RECUPERACAO_PRIVADA_PEM", recuperacao_pem.decode("utf-8"))
+    monkeypatch.setenv("RECUPERACAO_KEY_ID", "recuperacao-teste-v2")
+    monkeypatch.setenv(
+        "RECUPERACAO_PUBLICA_B64_ESPERADA",
+        base64.b64encode(recuperacao_publica).decode("ascii"),
+    )
+    monkeypatch.setenv("RECUPERACAO_DUPLA_APROVACAO", "true")
+    monkeypatch.setenv("OIDC_HABILITADO", "true")
+    monkeypatch.setenv("OIDC_ISSUER", "https://login.exemplo.test/tenant/v2.0")
+    monkeypatch.setenv("OIDC_AUTHORIZATION_ENDPOINT", "https://login.exemplo.test/authorize")
+    monkeypatch.setenv("OIDC_TOKEN_ENDPOINT", "https://login.exemplo.test/token")
+    monkeypatch.setenv("OIDC_JWKS_URI", "https://login.exemplo.test/jwks")
+    monkeypatch.setenv("OIDC_CLIENT_ID", "cliente-teste")
+    monkeypatch.setenv("OIDC_CLIENT_SECRET", "segredo-cliente-teste")
+    monkeypatch.setenv("OIDC_REDIRECT_URI", "https://servico.test/admin/callback")
+    monkeypatch.setenv("OIDC_SESSION_SECRET", "s" * 48)
+    monkeypatch.setenv("OIDC_GRUPO_LICENCAS_OPERADOR", "grupo-licencas")
+    monkeypatch.setenv("OIDC_GRUPO_RECUPERACAO_OPERADOR", "grupo-rec-operador")
+    monkeypatch.setenv("OIDC_GRUPO_RECUPERACAO_APROVADOR", "grupo-rec-aprovador")
+    monkeypatch.setenv("OIDC_GRUPO_AUDITORIA_LEITURA", "grupo-auditoria")
     monkeypatch.delenv("DATABASE_URL", raising=False)
     from fastapi.testclient import TestClient
     from app import main

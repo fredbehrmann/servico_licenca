@@ -15,10 +15,27 @@ a uma licença com vigência e limites próprios.
 from __future__ import annotations
 
 import copy
+import hmac
 import json
 import threading
 from datetime import datetime, timedelta
 from typing import Any, Optional, Protocol
+
+
+class RecuperacaoDuplicada(ValueError):
+    pass
+
+
+class RecuperacaoEstadoInvalido(ValueError):
+    pass
+
+
+class RecuperacaoAutoaprovacao(ValueError):
+    pass
+
+
+def hmac_compare_texto(a: Any, b: Any) -> bool:
+    return hmac.compare_digest(str(a or ""), str(b or ""))
 
 
 class Repositorio(Protocol):
@@ -50,6 +67,19 @@ class Repositorio(Protocol):
                                   resultado: str, detalhes: str,
                                   quando: datetime) -> None: ...
     def listar_auditoria_admin(self, limite: int = 100) -> list[dict[str, Any]]: ...
+    def preparar_recuperacao(self, dados: dict[str, Any]) -> dict[str, Any]: ...
+    def obter_recuperacao(self, request_id: str) -> Optional[dict[str, Any]]: ...
+    def listar_recuperacoes(self, limite: int = 100,
+                            estado: str = "") -> list[dict[str, Any]]: ...
+    def aprovar_recuperacao(self, request_id: str, aprovador: str, quando: int,
+                            dupla_aprovacao: bool = True) -> Optional[dict[str, Any]]: ...
+    def confirmar_emissao_recuperacao(
+        self, request_id: str, request_digest: str, emitido_por: str,
+        kid: str, jti_digest: str, token_digest: str,
+        emitido_em: int, token_expira_em: int,
+    ) -> Optional[dict[str, Any]]: ...
+    def contar_recuperacoes_recentes(self, operador: str, installation_id: str,
+                                     desde: int) -> tuple[int, int]: ...
     def aplicar_retencao(self, agora: datetime, tentativas_dias: int,
                          auditoria_dias: int) -> dict[str, int]: ...
     def obter_migracao_dados(self, migracao_id: str) -> Optional[dict[str, Any]]: ...
@@ -69,6 +99,7 @@ class RepositorioMemoria:
         self._licencas: dict[str, dict[str, Any]] = {}
         self._eventos: list[dict[str, Any]] = []
         self._auditoria_admin: list[dict[str, Any]] = []
+        self._recuperacoes: dict[str, dict[str, Any]] = {}
         self._migracoes_dados: dict[str, dict[str, Any]] = {}
         self._munic_revogados: set[str] = set()
         self.tentativas: list[dict[str, Any]] = []
@@ -233,6 +264,94 @@ class RepositorioMemoria:
     def listar_auditoria_admin(self, limite: int = 100) -> list[dict[str, Any]]:
         return [dict(e) for e in reversed(self._auditoria_admin[-max(1, int(limite)):])]
 
+    def preparar_recuperacao(self, dados: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            request_id = str(dados["request_id"])
+            digest = str(dados["request_digest"])
+            if request_id in self._recuperacoes or any(
+                item.get("request_digest") == digest for item in self._recuperacoes.values()
+            ):
+                raise RecuperacaoDuplicada("Esta solicitação já foi registrada.")
+            self._recuperacoes[request_id] = copy.deepcopy(dados)
+            return copy.deepcopy(self._recuperacoes[request_id])
+
+    def obter_recuperacao(self, request_id: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            item = self._recuperacoes.get(request_id)
+            return copy.deepcopy(item) if item else None
+
+    def listar_recuperacoes(self, limite: int = 100,
+                            estado: str = "") -> list[dict[str, Any]]:
+        with self._lock:
+            itens = list(self._recuperacoes.values())
+            if estado:
+                itens = [item for item in itens if item.get("estado") == estado]
+            itens.sort(key=lambda item: int(item.get("atualizado_em") or 0), reverse=True)
+            return copy.deepcopy(itens[:max(1, int(limite))])
+
+    def aprovar_recuperacao(self, request_id: str, aprovador: str, quando: int,
+                            dupla_aprovacao: bool = True) -> Optional[dict[str, Any]]:
+        with self._lock:
+            item = self._recuperacoes.get(request_id)
+            if item is None:
+                return None
+            if item.get("estado") != "preparada":
+                raise RecuperacaoEstadoInvalido("A solicitação não está aguardando aprovação.")
+            if int(item.get("solicitacao_expira_em") or 0) < int(quando):
+                item["estado"] = "expirada"
+                item["atualizado_em"] = int(quando)
+                raise RecuperacaoEstadoInvalido("A solicitação expirou.")
+            if dupla_aprovacao and hmac_compare_texto(item.get("operador_preparou"), aprovador):
+                raise RecuperacaoAutoaprovacao("Quem preparou não pode aprovar a solicitação.")
+            item["estado"] = "aprovada"
+            item["aprovador"] = aprovador
+            item["atualizado_em"] = int(quando)
+            return copy.deepcopy(item)
+
+    def confirmar_emissao_recuperacao(
+        self, request_id: str, request_digest: str, emitido_por: str,
+        kid: str, jti_digest: str, token_digest: str,
+        emitido_em: int, token_expira_em: int,
+    ) -> Optional[dict[str, Any]]:
+        with self._lock:
+            item = self._recuperacoes.get(request_id)
+            if item is None:
+                return None
+            if item.get("estado") != "aprovada":
+                raise RecuperacaoEstadoInvalido("A solicitação não está aprovada para emissão.")
+            if not hmac_compare_texto(item.get("request_digest"), request_digest):
+                raise RecuperacaoEstadoInvalido("A solicitação informada diverge da preparada.")
+            if int(item.get("solicitacao_expira_em") or 0) < int(emitido_em):
+                item["estado"] = "expirada"
+                item["atualizado_em"] = int(emitido_em)
+                raise RecuperacaoEstadoInvalido("A solicitação expirou.")
+            item.update({
+                "estado": "emitida",
+                "emitido_por": emitido_por,
+                "kid": kid,
+                "jti_digest": jti_digest,
+                "token_digest": token_digest,
+                "emitido_em": int(emitido_em),
+                "token_expira_em": int(token_expira_em),
+                "atualizado_em": int(emitido_em),
+            })
+            return copy.deepcopy(item)
+
+    def contar_recuperacoes_recentes(self, operador: str, installation_id: str,
+                                     desde: int) -> tuple[int, int]:
+        with self._lock:
+            por_operador = sum(
+                1 for item in self._recuperacoes.values()
+                if item.get("operador_preparou") == operador
+                and int(item.get("criado_em") or 0) >= int(desde)
+            )
+            por_instalacao = sum(
+                1 for item in self._recuperacoes.values()
+                if item.get("installation_id") == installation_id
+                and int(item.get("criado_em") or 0) >= int(desde)
+            )
+            return por_operador, por_instalacao
+
     @staticmethod
     def _data_evento(valor: Any) -> datetime:
         return valor if isinstance(valor, datetime) else datetime.fromisoformat(str(valor))
@@ -245,6 +364,7 @@ class RepositorioMemoria:
             antes_t = len(self.tentativas)
             antes_e = len(self._eventos)
             antes_a = len(self._auditoria_admin)
+            antes_r = len(self._recuperacoes)
             self.tentativas = [
                 item for item in self.tentativas
                 if self._data_evento(item["quando"]) >= corte_tentativas
@@ -257,10 +377,16 @@ class RepositorioMemoria:
                 item for item in self._auditoria_admin
                 if self._data_evento(item["quando"]) >= corte_auditoria
             ]
+            corte_epoch = int(corte_auditoria.timestamp())
+            self._recuperacoes = {
+                chave: item for chave, item in self._recuperacoes.items()
+                if int(item.get("atualizado_em") or 0) >= corte_epoch
+            }
         return {
             "tentativas": antes_t - len(self.tentativas),
             "eventos_licenca": antes_e - len(self._eventos),
             "auditoria_admin": antes_a - len(self._auditoria_admin),
+            "recuperacoes_senha": antes_r - len(self._recuperacoes),
         }
 
     def obter_migracao_dados(self, migracao_id: str) -> Optional[dict[str, Any]]:
@@ -587,6 +713,149 @@ class RepositorioPostgres:
                 GROUP BY l.licenca_id ORDER BY l.criada_em""")).mappings().all()
         return [self._datas_iso(dict(r)) for r in rows]
 
+    @staticmethod
+    def _campos_recuperacao() -> str:
+        return (
+            "request_id, request_digest, installation_id, usuario_referencia, "
+            "desafio_digest, versao_app, solicitado_em, solicitacao_expira_em, "
+            "estado, operador_preparou, aprovador, emitido_por, protocolo, "
+            "justificativa, metodo_verificacao, canal_oficial_confirmado, "
+            "escalonamento_confirmado, kid, jti_digest, token_digest, emitido_em, "
+            "token_expira_em, criado_em, atualizado_em"
+        )
+
+    def preparar_recuperacao(self, dados: dict[str, Any]) -> dict[str, Any]:
+        from sqlalchemy import text
+        from sqlalchemy.exc import IntegrityError
+        try:
+            with self._engine.begin() as con:
+                con.execute(text("""INSERT INTO recuperacoes_senha (
+                    request_id, request_digest, installation_id, usuario_referencia,
+                    desafio_digest, versao_app, solicitado_em, solicitacao_expira_em,
+                    estado, operador_preparou, aprovador, emitido_por, protocolo,
+                    justificativa, metodo_verificacao, canal_oficial_confirmado,
+                    escalonamento_confirmado, kid, jti_digest, token_digest,
+                    emitido_em, token_expira_em, criado_em, atualizado_em
+                ) VALUES (
+                    :request_id, :request_digest, :installation_id, :usuario_referencia,
+                    :desafio_digest, :versao_app, :solicitado_em, :solicitacao_expira_em,
+                    :estado, :operador_preparou, :aprovador, :emitido_por, :protocolo,
+                    :justificativa, :metodo_verificacao, :canal_oficial_confirmado,
+                    :escalonamento_confirmado, :kid, :jti_digest, :token_digest,
+                    :emitido_em, :token_expira_em, :criado_em, :atualizado_em
+                )"""), dados)
+        except IntegrityError as exc:
+            raise RecuperacaoDuplicada("Esta solicitação já foi registrada.") from exc
+        return self.obter_recuperacao(str(dados["request_id"])) or dict(dados)
+
+    def obter_recuperacao(self, request_id: str) -> Optional[dict[str, Any]]:
+        from sqlalchemy import text
+        with self._engine.connect() as con:
+            row = con.execute(text(
+                f"SELECT {self._campos_recuperacao()} FROM recuperacoes_senha "
+                "WHERE request_id=:r"
+            ), {"r": request_id}).mappings().first()
+        return self._datas_iso(dict(row)) if row else None
+
+    def listar_recuperacoes(self, limite: int = 100,
+                            estado: str = "") -> list[dict[str, Any]]:
+        from sqlalchemy import text
+        filtro = "WHERE estado=:e" if estado else ""
+        parametros: dict[str, Any] = {"n": max(1, int(limite))}
+        if estado:
+            parametros["e"] = estado
+        with self._engine.connect() as con:
+            rows = con.execute(text(
+                f"SELECT {self._campos_recuperacao()} FROM recuperacoes_senha "
+                f"{filtro} ORDER BY atualizado_em DESC LIMIT :n"
+            ), parametros).mappings().all()
+        return [self._datas_iso(dict(row)) for row in rows]
+
+    def aprovar_recuperacao(self, request_id: str, aprovador: str, quando: int,
+                            dupla_aprovacao: bool = True) -> Optional[dict[str, Any]]:
+        from sqlalchemy import text
+        expirou = False
+        with self._engine.begin() as con:
+            row = con.execute(text(
+                "SELECT estado, operador_preparou, solicitacao_expira_em "
+                "FROM recuperacoes_senha WHERE request_id=:r FOR UPDATE"
+            ), {"r": request_id}).mappings().first()
+            if row is None:
+                return None
+            if row["estado"] != "preparada":
+                raise RecuperacaoEstadoInvalido("A solicitação não está aguardando aprovação.")
+            if int(row["solicitacao_expira_em"]) < int(quando):
+                con.execute(text(
+                    "UPDATE recuperacoes_senha SET estado='expirada', atualizado_em=:q "
+                    "WHERE request_id=:r"
+                ), {"q": int(quando), "r": request_id})
+                expirou = True
+            elif dupla_aprovacao and hmac_compare_texto(row["operador_preparou"], aprovador):
+                raise RecuperacaoAutoaprovacao("Quem preparou não pode aprovar a solicitação.")
+            elif not expirou:
+                con.execute(text(
+                    "UPDATE recuperacoes_senha SET estado='aprovada', aprovador=:a, "
+                    "atualizado_em=:q WHERE request_id=:r"
+                ), {"a": aprovador, "q": int(quando), "r": request_id})
+        if expirou:
+            raise RecuperacaoEstadoInvalido("A solicitação expirou.")
+        return self.obter_recuperacao(request_id)
+
+    def confirmar_emissao_recuperacao(
+        self, request_id: str, request_digest: str, emitido_por: str,
+        kid: str, jti_digest: str, token_digest: str,
+        emitido_em: int, token_expira_em: int,
+    ) -> Optional[dict[str, Any]]:
+        from sqlalchemy import text
+        expirou = False
+        with self._engine.begin() as con:
+            row = con.execute(text(
+                "SELECT estado, request_digest, solicitacao_expira_em "
+                "FROM recuperacoes_senha WHERE request_id=:r FOR UPDATE"
+            ), {"r": request_id}).mappings().first()
+            if row is None:
+                return None
+            if row["estado"] != "aprovada":
+                raise RecuperacaoEstadoInvalido("A solicitação não está aprovada para emissão.")
+            if not hmac_compare_texto(row["request_digest"], request_digest):
+                raise RecuperacaoEstadoInvalido("A solicitação informada diverge da preparada.")
+            if int(row["solicitacao_expira_em"]) < int(emitido_em):
+                con.execute(text(
+                    "UPDATE recuperacoes_senha SET estado='expirada', atualizado_em=:q "
+                    "WHERE request_id=:r"
+                ), {"q": int(emitido_em), "r": request_id})
+                expirou = True
+            else:
+                con.execute(text("""UPDATE recuperacoes_senha SET
+                    estado='emitida', emitido_por=:p, kid=:k, jti_digest=:j,
+                    token_digest=:t, emitido_em=:q, token_expira_em=:x,
+                    atualizado_em=:q WHERE request_id=:r"""), {
+                    "p": emitido_por,
+                    "k": kid,
+                    "j": jti_digest,
+                    "t": token_digest,
+                    "q": int(emitido_em),
+                    "x": int(token_expira_em),
+                    "r": request_id,
+                })
+        if expirou:
+            raise RecuperacaoEstadoInvalido("A solicitação expirou.")
+        return self.obter_recuperacao(request_id)
+
+    def contar_recuperacoes_recentes(self, operador: str, installation_id: str,
+                                     desde: int) -> tuple[int, int]:
+        from sqlalchemy import text
+        with self._engine.connect() as con:
+            por_operador = con.execute(text(
+                "SELECT count(*) FROM recuperacoes_senha "
+                "WHERE operador_preparou=:o AND criado_em>=:d"
+            ), {"o": operador, "d": int(desde)}).scalar_one()
+            por_instalacao = con.execute(text(
+                "SELECT count(*) FROM recuperacoes_senha "
+                "WHERE installation_id=:i AND criado_em>=:d"
+            ), {"i": installation_id, "d": int(desde)}).scalar_one()
+        return int(por_operador), int(por_instalacao)
+
     def atualizar_licenca(self, licenca_id: str,
                           dados: dict[str, Any]) -> Optional[dict[str, Any]]:
         from sqlalchemy import text
@@ -709,10 +978,15 @@ class RepositorioPostgres:
             auditoria = con.execute(
                 text("DELETE FROM auditoria_admin WHERE quando < :c"), {"c": corte_auditoria}
             ).rowcount or 0
+            recuperacoes = con.execute(
+                text("DELETE FROM recuperacoes_senha WHERE atualizado_em < :c"),
+                {"c": int(corte_auditoria.timestamp())},
+            ).rowcount or 0
         return {
             "tentativas": int(tentativas),
             "eventos_licenca": int(eventos),
             "auditoria_admin": int(auditoria),
+            "recuperacoes_senha": int(recuperacoes),
         }
 
     def obter_migracao_dados(self, migracao_id: str) -> Optional[dict[str, Any]]:

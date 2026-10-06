@@ -21,7 +21,7 @@ from sqlalchemy.engine import make_url
 
 from app import migracoes_schema
 from app.migracoes_schema import MigracaoSchema
-from app.repositorio import RepositorioPostgres
+from app.repositorio import RecuperacaoEstadoInvalido, RepositorioPostgres
 
 
 _AGORA = datetime(2026, 9, 17, 12, tzinfo=timezone.utc)
@@ -110,6 +110,7 @@ def test_postgres_cria_esquema_completo_em_banco_vazio(banco_postgres):
         assert {
             "licencas", "instalacoes", "tentativas", "eventos_licenca",
             "auditoria_admin", "migracoes_dados", "migracoes_schema",
+            "recuperacoes_senha",
         } <= tabelas
         assert "nome_municipio" in colunas_licencas
         assert "associada_em" in colunas_instalacoes
@@ -252,6 +253,60 @@ def test_postgres_consultas_e_relatorios_administrativos(banco_postgres):
         assert repo.listar_tentativas()[0]["status"] == "ativa"
         assert repo.listar_eventos_licenca(licenca["licenca_id"])[0]["acao"] == "licenca_criada"
         assert repo.listar_auditoria_admin()[0]["operador"] == "fred"
+    finally:
+        repo._engine.dispose()
+
+
+def test_postgres_impede_emissao_recuperacao_concorrente(banco_postgres):
+    repo = RepositorioPostgres(banco_postgres())
+    agora = int(_AGORA.timestamp())
+    registro = {
+        "request_id": "pedido-postgres-concorrente",
+        "request_digest": "a" * 64,
+        "installation_id": str(uuid.uuid4()),
+        "usuario_referencia": "usuario-opaco",
+        "desafio_digest": "b" * 64,
+        "versao_app": "1.0.6",
+        "solicitado_em": agora,
+        "solicitacao_expira_em": agora + 7200,
+        "estado": "preparada",
+        "operador_preparou": "oidc:operador",
+        "aprovador": None,
+        "emitido_por": None,
+        "protocolo": "CHAMADO-PG-1",
+        "justificativa": "Identidade confirmada por contato oficial cadastrado.",
+        "metodo_verificacao": "contato_oficial_cadastrado",
+        "canal_oficial_confirmado": True,
+        "escalonamento_confirmado": False,
+        "kid": None,
+        "jti_digest": None,
+        "token_digest": None,
+        "emitido_em": None,
+        "token_expira_em": None,
+        "criado_em": agora,
+        "atualizado_em": agora,
+    }
+    try:
+        repo.preparar_recuperacao(registro)
+        repo.aprovar_recuperacao(
+            registro["request_id"], "oidc:aprovador", agora + 1, True,
+        )
+
+        def emitir(sufixo: str) -> str:
+            try:
+                repo.confirmar_emissao_recuperacao(
+                    registro["request_id"], registro["request_digest"],
+                    "oidc:aprovador", "recuperacao-teste-v2", (sufixo * 64)[:64],
+                    (("f" + sufixo) * 32)[:64], agora + 2, agora + 902,
+                )
+                return "emitida"
+            except RecuperacaoEstadoInvalido:
+                return "recusada"
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            resultados = list(executor.map(emitir, ["1", "2"]))
+        assert sorted(resultados) == ["emitida", "recusada"]
+        assert repo.obter_recuperacao(registro["request_id"])["estado"] == "emitida"
     finally:
         repo._engine.dispose()
 

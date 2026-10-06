@@ -14,6 +14,7 @@ from typing import Optional
 
 from app import contrato
 from app.assinador import Assinador
+from app.assinador_recuperacao import AssinadorRecuperacao
 from app.repositorio import Repositorio, RepositorioPostgres
 
 
@@ -45,6 +46,14 @@ class ConfiguracaoOperacional:
     replicas_explicitas: bool
     retencao_tentativas_dias: int
     retencao_auditoria_dias: int
+    recuperacao_habilitada: bool = False
+    recuperacao_key_id: str = ""
+    recuperacao_publica_esperada_b64: str = ""
+    recuperacao_token_ttl_s: int = 900
+    recuperacao_rate_max: int = 5
+    recuperacao_rate_janela_s: int = 3600
+    recuperacao_dupla_aprovacao: bool = True
+    oidc_configurado: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,6 +75,7 @@ def diagnosticar(
     cfg: ConfiguracaoOperacional,
     repo: Repositorio,
     assinador: Optional[Assinador],
+    assinador_recuperacao: Optional[AssinadorRecuperacao] = None,
 ) -> DiagnosticoProntidao:
     """Valida configuração, chave, banco e esquema sem expor segredos."""
     problemas: list[str] = []
@@ -97,6 +107,26 @@ def diagnosticar(
     if cfg.retencao_tentativas_dias < 1 or cfg.retencao_auditoria_dias < 1:
         problemas.append("retencao_invalida")
 
+    if cfg.recuperacao_habilitada:
+        if not cfg.recuperacao_key_id:
+            problemas.append("recuperacao_key_id_ausente")
+        if assinador_recuperacao is None:
+            problemas.append("recuperacao_chave_privada_invalida_ou_ausente")
+        elif cfg.recuperacao_key_id != assinador_recuperacao.key_id:
+            problemas.append("recuperacao_key_id_nao_corresponde_ao_assinador")
+        elif (
+            cfg.recuperacao_publica_esperada_b64
+            and cfg.recuperacao_publica_esperada_b64
+            != assinador_recuperacao.chave_publica_b64()
+        ):
+            problemas.append("recuperacao_chave_nao_corresponde_a_publica_esperada")
+        if not cfg.recuperacao_publica_esperada_b64:
+            problemas.append("recuperacao_chave_publica_esperada_ausente")
+        if not 1 <= cfg.recuperacao_token_ttl_s <= 900:
+            problemas.append("recuperacao_ttl_invalido")
+        if cfg.recuperacao_rate_max < 1 or cfg.recuperacao_rate_janela_s < 1:
+            problemas.append("recuperacao_limite_invalido")
+
     if cfg.ambiente == contrato.AMBIENTE_PRODUCAO:
         if not cfg.database_url or not _url_postgres(cfg.database_url):
             problemas.append("database_url_postgres_obrigatoria")
@@ -108,6 +138,11 @@ def diagnosticar(
             problemas.append("quantidade_replicas_nao_definida")
         elif cfg.replicas != 1:
             problemas.append("limitador_local_exige_uma_replica")
+        if cfg.recuperacao_habilitada:
+            if not cfg.oidc_configurado:
+                problemas.append("recuperacao_oidc_nao_configurado")
+            if not cfg.recuperacao_dupla_aprovacao:
+                problemas.append("recuperacao_dupla_aprovacao_obrigatoria")
 
     try:
         repo_pronto = repo.pronto()

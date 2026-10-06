@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Painel web de administração das licenças (servido em GET /admin).
+"""Painel web de licenças e recuperação de senha (servido em GET /admin).
 
 Página única, autocontida (CSS/JS inline; a logo entra embutida como data-URI, sem
 CDN). Não carrega nada sozinha: o operador cola o ADMIN_TOKEN, que fica só na sessão
@@ -58,9 +58,10 @@ _TEMPLATE = """<!doctype html>
   h2{font-size:15px;margin:0 0 14px;color:var(--navy);display:flex;align-items:center;gap:8px;font-weight:600}
   h2 .dir{margin-left:auto;font-weight:400}
   label{display:block;font-size:12px;color:var(--muted);margin:8px 0 4px}
-  input,select{width:100%;padding:9px 11px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:14px;
+  input,select,textarea{width:100%;padding:9px 11px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:14px;
         background:var(--surface);color:var(--text)}
-  input:focus,select:focus{outline:2px solid var(--verde);outline-offset:1px;border-color:var(--verde)}
+  textarea{min-height:96px;resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+  input:focus,select:focus,textarea:focus{outline:2px solid var(--verde);outline-offset:1px;border-color:var(--verde)}
   .linha{display:flex;gap:12px;flex-wrap:wrap}
   .linha>div{flex:1;min-width:150px}
   button{background:var(--verde);color:#fff;border:0;border-radius:var(--radius-sm);padding:10px 16px;
@@ -103,17 +104,34 @@ _TEMPLATE = """<!doctype html>
   .paginacao{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:12px}
   .paginacao span{color:var(--muted);font-size:12px}
   .rodape{color:var(--muted);font-size:12px;text-align:center;margin:6px 0 24px}
+  .abas{display:flex;gap:8px;margin:0 0 16px;flex-wrap:wrap}
+  .abas button{background:var(--surface);color:var(--navy);border:1px solid var(--border)}
+  .abas button.ativa{background:var(--navy);color:#fff;border-color:var(--navy)}
+  .etapas{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0}
+  .etapa{padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface2)}
+  .etapa b{display:block;color:var(--navy);margin-bottom:4px}.etapa span{font-size:12px;color:var(--muted)}
+  .mensagem-fluxo{padding:10px 12px;border-radius:var(--radius-sm);margin:10px 0;background:var(--surface2);color:var(--muted)}
+  .mensagem-fluxo.ok{background:var(--ok-bg);color:var(--ok)}.mensagem-fluxo.erro{background:var(--alert-bg);color:var(--alert)}
+  .token-saida{background:#071a32;color:#fff;border-color:#071a32;min-height:130px}
+  .checks label{display:flex;align-items:flex-start;gap:8px;color:var(--text);font-size:13px}
+  .checks input{width:auto;margin-top:2px}.identidade{font-size:12px;color:var(--muted);margin:10px 0}
+  fieldset{border:0;padding:0;margin:0}fieldset:disabled{opacity:.55}
   @media(max-width:680px){.resumo{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:680px){.etapas{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <header><span class="marca">__MARCA__</span><span class="div"></span>
-  <span class="titulo">Administração de licenças</span><span class="amb" id="amb"></span></header>
+  <span class="titulo">Administração de licenças e acessos</span><span class="amb" id="amb"></span></header>
 <main>
   <div id="aviso"></div>
 
   <div class="cartao" id="box-acesso">
     <h2>Acesso</h2>
+    <div id="sessao-info" class="identidade">Use sua conta corporativa para operações sensíveis.</div>
+    <button id="btn-oidc" onclick="location.href='/admin/login'">Entrar com conta corporativa</button>
+    <hr class="separador">
+    <div class="vazio">A credencial compartilhada abaixo permanece apenas para as rotinas legadas de licença. Ela não autoriza recuperação de senha.</div>
     <label>Operador responsável</label>
     <input id="operador" placeholder="seu nome ou identificador corporativo" autocomplete="username">
     <label>Token de administração</label>
@@ -121,12 +139,17 @@ _TEMPLATE = """<!doctype html>
            onkeydown="if(event.key==='Enter')entrar()">
     <div class="linha" style="margin-top:12px">
       <div style="flex:0"><button onclick="entrar()">Entrar</button></div>
-      <div style="flex:0"><button class="sec" onclick="sair()">Esquecer token</button></div>
+      <div style="flex:0"><button class="sec" onclick="sair()">Sair</button></div>
       <div style="flex:0"><button class="sec" onclick="carregar()">Atualizar</button></div>
     </div>
   </div>
 
   <div id="painel" style="display:none">
+    <div class="abas">
+      <button id="aba-licencas" class="ativa" onclick="abrirArea('licencas')">Licenças</button>
+      <button id="aba-recuperacao" onclick="abrirArea('recuperacao')">Recuperação de senha</button>
+    </div>
+    <section id="area-licencas">
     <div class="resumo">
       <div class="stat"><div class="n" style="color:var(--navy)" id="r-total">0</div><div class="l">instalações</div></div>
       <div class="stat"><div class="n" style="color:var(--ok)" id="r-ativas">0</div><div class="l">ativas</div></div>
@@ -231,6 +254,74 @@ _TEMPLATE = """<!doctype html>
       </table>
       <div class="rodape" style="text-align:left;margin:10px 0 0">O serviço registra cada consulta (sem dado pessoal): identificador, município, horário e resposta.</div>
     </div>
+    </section>
+
+    <section id="area-recuperacao" style="display:none">
+      <div class="cartao">
+        <h2>Recuperação de senha administrativa</h2>
+        <div class="etapas">
+          <div class="etapa"><b>1. Validar</b><span>Confira a solicitação gerada pelo SICOF.</span></div>
+          <div class="etapa"><b>2. Aprovar</b><span>Outro operador revisa o atendimento.</span></div>
+          <div class="etapa"><b>3. Emitir</b><span>O token aparece uma única vez por 15 minutos.</span></div>
+        </div>
+        <div class="mensagem-fluxo">O suporte nunca deve pedir a senha atual ou a nova senha do usuário.</div>
+        <label>Solicitação gerada no SICOF</label>
+        <textarea id="rec_solicitacao" placeholder="Cole o texto iniciado por TFRQ1."></textarea>
+        <button id="rec_btn_validar" style="margin-top:10px" onclick="validarRecuperacao()">Validar solicitação</button>
+        <div id="rec_mensagem" class="mensagem-fluxo" style="display:none" role="status"></div>
+        <div id="rec_resumo" class="consulta-resumo"></div>
+      </div>
+
+      <div class="cartao">
+        <h2>Registrar atendimento</h2>
+        <fieldset id="rec_preparo" disabled>
+          <div class="linha">
+            <div><label>Protocolo</label><input id="rec_protocolo" maxlength="120" placeholder="ex.: CHAMADO-2026-001"></div>
+            <div><label>Método de verificação</label><select id="rec_metodo">
+              <option value="">selecione</option>
+              <option value="contato_oficial_cadastrado">Contato oficial cadastrado</option>
+              <option value="videochamada_documentada">Videochamada documentada</option>
+              <option value="presencial">Atendimento presencial</option>
+              <option value="outro_escalonado">Outro — escalonado</option>
+            </select></div>
+          </div>
+          <label>Justificativa da recuperação</label>
+          <textarea id="rec_justificativa" maxlength="1000" placeholder="Descreva como a identidade foi conferida e por que a recuperação é necessária."></textarea>
+          <div class="checks">
+            <label><input id="rec_canal" type="checkbox"> O retorno será enviado somente pelo canal oficial confirmado.</label>
+            <label><input id="rec_escalonamento" type="checkbox"> A exceção para instalação desconhecida foi escalonada e documentada.</label>
+          </div>
+          <button id="rec_btn_preparar" style="margin-top:10px" onclick="prepararRecuperacao()">Preparar para aprovação</button>
+        </fieldset>
+      </div>
+
+      <div class="cartao">
+        <h2>Aprovação e emissão</h2>
+        <div id="rec_selecionada" class="mensagem-fluxo">Nenhuma solicitação preparada selecionada.</div>
+        <div class="checks"><label><input id="rec_confirmar_aprovacao" type="checkbox"> Revisei o protocolo, a identidade e o contexto da instalação.</label></div>
+        <div class="linha" style="margin-top:10px">
+          <div style="flex:0"><button id="rec_btn_aprovar" disabled onclick="aprovarRecuperacao()">Aprovar</button></div>
+          <div><input id="rec_confirmacao" placeholder="Para emitir, digite EMITIR" autocomplete="off"></div>
+          <div style="flex:0"><button id="rec_btn_emitir" disabled onclick="emitirRecuperacao()">Emitir token</button></div>
+        </div>
+        <div id="rec_token_box" style="display:none;margin-top:14px">
+          <label>Token — copie agora; ele não será exibido novamente</label>
+          <textarea id="rec_token" class="token-saida" readonly></textarea>
+          <div class="linha" style="margin-top:8px">
+            <div style="flex:0"><button onclick="copiarTokenRecuperacao()">Copiar token</button></div>
+            <div id="rec_contagem" class="identidade"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="cartao">
+        <h2>Histórico saneado <span class="dir"><button class="sec peq" onclick="carregarRecuperacoes()">Atualizar</button></span></h2>
+        <div class="tabela-scroll"><table>
+          <thead><tr><th>Atualização</th><th>Protocolo</th><th>Instalação</th><th>Estado</th><th>Responsáveis</th><th></th></tr></thead>
+          <tbody id="tab-rec"><tr><td colspan="6" class="vazio">Entre com a conta corporativa para consultar.</td></tr></tbody>
+        </table></div>
+      </div>
+    </section>
   </div>
 
   <div class="rodape">As ações valem na próxima consulta do app. Revogação não volta a valer off-line.</div>
@@ -240,6 +331,10 @@ _TEMPLATE = """<!doctype html>
 let _instalacoes = [];
 let _licencas = [];
 let _paginaRelacionamentos = 1;
+let _sessao = {autenticado:false,papeis:[]};
+let _csrf = '';
+let _recuperacaoAtual = null;
+let _intervaloToken = null;
 const _porPaginaRelacionamentos = 10;
 function tok(){ return sessionStorage.getItem('admtok') || ''; }
 function operador(){ return sessionStorage.getItem('admoperador') || ''; }
@@ -266,15 +361,19 @@ function rotuloLicenca(licenca){
 }
 
 async function chamar(metodo, url, corpo){
+  const headers={'Content-Type':'application/json'};
+  if(tok())headers['Authorization']='Bearer '+tok();
+  if(operador())headers['X-Admin-Operador']=operador();
+  if(_csrf)headers['X-CSRF-Token']=_csrf;
   const r = await fetch(url, {
     method: metodo,
-    headers: { 'Authorization': 'Bearer ' + tok(), 'X-Admin-Operador': operador(),
-      'Content-Type': 'application/json' },
+    credentials:'same-origin', headers,
     body: corpo ? JSON.stringify(corpo) : undefined
   });
-  if (r.status === 401){ aviso('Token inválido. Confira o ADMIN_TOKEN.', false); throw new Error('401'); }
-  if (!r.ok){ const t = await r.text(); aviso('Erro ' + r.status + ': ' + t, false); throw new Error(t); }
-  return r.json();
+  let dados={}; try{ dados=await r.json(); }catch(e){}
+  if (r.status === 401){ aviso(_sessao.autenticado?'Sua sessão expirou. Entre novamente.':'Autenticação obrigatória.', false); throw new Error('401'); }
+  if (!r.ok){ const detalhe=dados.detail||('Falha HTTP '+r.status); aviso(detalhe, false); throw new Error(detalhe); }
+  return dados;
 }
 
 function entrar(){
@@ -286,12 +385,50 @@ function entrar(){
   sessionStorage.setItem('admoperador', op);
   carregar();
 }
-function sair(){ sessionStorage.removeItem('admtok'); sessionStorage.removeItem('admoperador');
+async function sair(){
+  if(_sessao.autenticado){ try{ await chamar('POST','/admin/logout',{}); }catch(e){} }
+  sessionStorage.removeItem('admtok'); sessionStorage.removeItem('admoperador');
+  limparTokenRecuperacao(); _csrf=''; _sessao={autenticado:false,papeis:[]};
   document.getElementById('token').value=''; document.getElementById('operador').value='';
-  document.getElementById('painel').style.display='none'; }
+  document.getElementById('painel').style.display='none';
+  document.getElementById('sessao-info').textContent='Sessão encerrada.';
+}
+
+function temPapel(papel){ return (_sessao.papeis||[]).includes(papel); }
+function podeRecuperacao(){ return temPapel('recuperacao_operador')||temPapel('recuperacao_aprovador')||temPapel('auditoria_leitura'); }
+function abrirArea(area){
+  const rec=area==='recuperacao';
+  if(rec&&!podeRecuperacao()){ aviso('Sua conta não possui perfil de recuperação.',false); return; }
+  document.getElementById('area-licencas').style.display=rec?'none':'';
+  document.getElementById('area-recuperacao').style.display=rec?'':'none';
+  document.getElementById('aba-licencas').className=rec?'':'ativa';
+  document.getElementById('aba-recuperacao').className=rec?'ativa':'';
+  if(rec)carregarRecuperacoes();
+}
+
+async function inicializarSessao(){
+  try{
+    const r=await fetch('/admin/sessao',{credentials:'same-origin',headers:{'Accept':'application/json'}});
+    _sessao=await r.json(); _csrf=_sessao.csrf||'';
+  }catch(e){ _sessao={autenticado:false,papeis:[]}; }
+  const info=document.getElementById('sessao-info');
+  const btn=document.getElementById('btn-oidc');
+  if(_sessao.autenticado){
+    info.textContent='Conectado como '+(_sessao.nome||'operador')+(_sessao.mfa?' · MFA confirmado':'');
+    btn.style.display='none'; document.getElementById('painel').style.display='';
+    document.getElementById('aba-recuperacao').style.display=podeRecuperacao()&&_sessao.recuperacao_habilitada!==false?'':'none';
+    document.getElementById('aba-licencas').style.display=temPapel('licencas_operador')?'':'none';
+    document.getElementById('rec_btn_validar').disabled=!temPapel('recuperacao_operador');
+    document.getElementById('rec_btn_preparar').disabled=!temPapel('recuperacao_operador');
+    if(temPapel('licencas_operador'))carregar(); else if(podeRecuperacao())abrirArea('recuperacao');
+  }else{
+    btn.style.display=_sessao.oidc_habilitado===false?'none':'';
+    document.getElementById('aba-recuperacao').style.display='none';
+  }
+}
 
 async function carregar(){
-  if (!tok()){ aviso('Cole o token e clique em Entrar.', false); return; }
+  if (!tok()&&!(_sessao.autenticado&&temPapel('licencas_operador'))){ aviso('Entre com sua conta ou informe a credencial legada.', false); return; }
   try{
     const [inst, mr, tent, lic, mig, contexto] = await Promise.all([
       chamar('GET','/admin/instalacoes'),
@@ -577,8 +714,132 @@ async function revogarMunicipio(){ const ibge=document.getElementById('m_ibge').
 async function reativarMunicipio(ibgeCod){ const ibge=decodeURIComponent(ibgeCod);
   try{ await chamar('POST','/admin/reativar-municipio',{codigo_ibge:ibge}); aviso('Município reativado.', true); carregar(); }catch(e){} }
 
+function mensagemRecuperacao(texto,ok){
+  const alvo=document.getElementById('rec_mensagem'); alvo.textContent=texto;
+  alvo.className='mensagem-fluxo '+(ok?'ok':'erro'); alvo.style.display='block';
+}
+function dataEpoch(valor){
+  const n=Number(valor); return n?new Date(n*1000).toLocaleString('pt-BR'):'—';
+}
+function resumoRecuperacao(d){
+  const alerta=d.instalacao_conhecida?'Instalação localizada.':'Instalação não localizada — escalonamento obrigatório.';
+  document.getElementById('rec_resumo').innerHTML=
+    '<div class="consulta-item"><b>Validade</b><span>Solicitada em '+esc(dataEpoch(d.solicitado_em))+'</span><span>Expira em '+esc(dataEpoch(d.expira_em))+'</span></div>'+
+    '<div class="consulta-item"><b>Instalação</b><span class="cod">'+esc(d.installation_id)+'</span><span>'+esc(alerta)+'</span></div>'+
+    '<div class="consulta-item"><b>Conta</b><span>'+esc(d.usuario_mascarado)+'</span><span>Versão '+esc(d.versao_app)+'</span></div>'+
+    '<div class="consulta-item"><b>Licença</b><span>'+esc(d.nome_municipio||'Não vinculada')+'</span><span>'+esc(d.status_licenca||d.status_instalacao||'sem contexto')+'</span></div>';
+}
+async function validarRecuperacao(){
+  limparTokenRecuperacao();
+  const solicitacao=document.getElementById('rec_solicitacao').value.trim();
+  if(!solicitacao.startsWith('TFRQ1.')){ mensagemRecuperacao('Cole uma solicitação TFRQ1 válida.',false); return; }
+  const botao=document.getElementById('rec_btn_validar'); botao.disabled=true;
+  try{
+    const r=await chamar('POST','/admin/recuperacoes/validar',{solicitacao});
+    _recuperacaoAtual={request_id:r.solicitacao.request_id,estado:'validada'};
+    resumoRecuperacao(r.solicitacao); document.getElementById('rec_preparo').disabled=false;
+    mensagemRecuperacao('Solicitação válida. Confira o contexto antes de registrar o atendimento.',true);
+  }catch(e){ document.getElementById('rec_preparo').disabled=true; }
+  finally{ botao.disabled=!temPapel('recuperacao_operador'); }
+}
+async function prepararRecuperacao(){
+  const solicitacao=document.getElementById('rec_solicitacao').value.trim();
+  const corpo={solicitacao,
+    protocolo:document.getElementById('rec_protocolo').value.trim(),
+    justificativa:document.getElementById('rec_justificativa').value.trim(),
+    metodo_verificacao:document.getElementById('rec_metodo').value,
+    canal_oficial_confirmado:document.getElementById('rec_canal').checked,
+    escalonamento_confirmado:document.getElementById('rec_escalonamento').checked};
+  const botao=document.getElementById('rec_btn_preparar'); botao.disabled=true;
+  try{
+    const r=await chamar('POST','/admin/recuperacoes/preparar',corpo);
+    _recuperacaoAtual=r.recuperacao; atualizarSelecionada();
+    mensagemRecuperacao('Atendimento preparado. Outro operador deve aprová-lo.',true);
+    await carregarRecuperacoes();
+  }catch(e){}
+  finally{ botao.disabled=!temPapel('recuperacao_operador'); }
+}
+function atualizarSelecionada(){
+  const alvo=document.getElementById('rec_selecionada');
+  if(!_recuperacaoAtual){ alvo.textContent='Nenhuma solicitação preparada selecionada.'; return; }
+  alvo.textContent='Solicitação '+_recuperacaoAtual.request_id+' · estado: '+_recuperacaoAtual.estado+
+    (_recuperacaoAtual.protocolo?' · protocolo: '+_recuperacaoAtual.protocolo:'');
+  const aprovar=_recuperacaoAtual.estado==='preparada'&&temPapel('recuperacao_aprovador');
+  const emitir=_recuperacaoAtual.estado==='aprovada'&&temPapel('recuperacao_aprovador');
+  document.getElementById('rec_btn_aprovar').disabled=!aprovar;
+  document.getElementById('rec_btn_emitir').disabled=!emitir;
+}
+function selecionarRecuperacao(idCod){
+  const id=decodeURIComponent(idCod);
+  const linha=(window._recuperacoes||[]).find(item=>String(item.request_id)===id);
+  if(linha){ _recuperacaoAtual=linha; atualizarSelecionada(); limparTokenRecuperacao(); }
+}
+async function carregarRecuperacoes(){
+  if(!_sessao.autenticado||!podeRecuperacao())return;
+  try{
+    const r=await chamar('GET','/admin/recuperacoes?limite=100');
+    window._recuperacoes=r.recuperacoes||[];
+    const tb=document.getElementById('tab-rec'); tb.innerHTML='';
+    if(!window._recuperacoes.length){ tb.innerHTML='<tr><td colspan="6" class="vazio">Nenhuma recuperação registrada.</td></tr>'; return; }
+    for(const item of window._recuperacoes){
+      const responsaveis='Preparou: '+esc(item.operador_preparou||'—')+'<br>Aprovou: '+esc(item.aprovador||'—');
+      const tr=document.createElement('tr');
+      tr.innerHTML='<td>'+esc(dataEpoch(item.atualizado_em))+'</td><td>'+esc(item.protocolo)+'</td>'+
+        '<td class="cod">'+esc(item.installation_id)+'</td><td>'+tagStatus(item.estado)+'</td>'+
+        '<td>'+responsaveis+'</td><td><button class="sec peq">Selecionar</button></td>';
+      tr.querySelector('button').addEventListener('click',()=>selecionarRecuperacao(encodeURIComponent(item.request_id)));
+      tb.appendChild(tr);
+    }
+  }catch(e){}
+}
+async function aprovarRecuperacao(){
+  if(!_recuperacaoAtual)return;
+  if(!document.getElementById('rec_confirmar_aprovacao').checked){ mensagemRecuperacao('Confirme que realizou a revisão antes de aprovar.',false); return; }
+  const botao=document.getElementById('rec_btn_aprovar'); botao.disabled=true;
+  try{
+    const r=await chamar('POST','/admin/recuperacoes/'+encodeURIComponent(_recuperacaoAtual.request_id)+'/aprovar',{confirmar:true});
+    _recuperacaoAtual=r.recuperacao; atualizarSelecionada();
+    mensagemRecuperacao('Solicitação aprovada. Apresente novamente o TFRQ1 e digite EMITIR.',true);
+    await carregarRecuperacoes();
+  }catch(e){ atualizarSelecionada(); }
+}
+async function emitirRecuperacao(){
+  if(!_recuperacaoAtual)return;
+  const solicitacao=document.getElementById('rec_solicitacao').value.trim();
+  const confirmacao=document.getElementById('rec_confirmacao').value.trim();
+  if(!solicitacao.startsWith('TFRQ1.')){ mensagemRecuperacao('Cole novamente a solicitação TFRQ1 aprovada.',false); return; }
+  if(confirmacao!=='EMITIR'){ mensagemRecuperacao('Digite EMITIR para confirmar a emissão.',false); return; }
+  const botao=document.getElementById('rec_btn_emitir'); botao.disabled=true;
+  try{
+    const r=await chamar('POST','/admin/recuperacoes/'+encodeURIComponent(_recuperacaoAtual.request_id)+'/emitir',{solicitacao,confirmacao});
+    document.getElementById('rec_token').value=r.token;
+    document.getElementById('rec_token_box').style.display='block';
+    _recuperacaoAtual.estado='emitida'; atualizarSelecionada(); iniciarContagemToken(r.expira_em);
+    mensagemRecuperacao('Token emitido. Copie-o agora e envie somente pelo canal oficial.',true);
+    document.getElementById('rec_confirmacao').value=''; await carregarRecuperacoes();
+  }catch(e){ atualizarSelecionada(); }
+}
+function iniciarContagemToken(expiraEm){
+  if(_intervaloToken)clearInterval(_intervaloToken);
+  const atualizar=()=>{ const restante=Math.max(0,Number(expiraEm)-Math.floor(Date.now()/1000));
+    document.getElementById('rec_contagem').textContent=restante?'Expira em '+Math.floor(restante/60)+'m '+(restante%60)+'s':'Token expirado.';
+    if(!restante&&_intervaloToken){clearInterval(_intervaloToken);_intervaloToken=null;}};
+  atualizar(); _intervaloToken=setInterval(atualizar,1000);
+}
+async function copiarTokenRecuperacao(){
+  const campo=document.getElementById('rec_token'); if(!campo.value)return;
+  try{ await navigator.clipboard.writeText(campo.value); mensagemRecuperacao('Token copiado.',true); }
+  catch(e){ campo.select(); document.execCommand('copy'); mensagemRecuperacao('Token copiado.',true); }
+}
+function limparTokenRecuperacao(){
+  const campo=document.getElementById('rec_token'); if(campo)campo.value='';
+  const caixa=document.getElementById('rec_token_box'); if(caixa)caixa.style.display='none';
+  if(_intervaloToken){clearInterval(_intervaloToken);_intervaloToken=null;}
+}
+
 if (operador()) document.getElementById('operador').value=operador();
-if (tok() && operador()) carregar();
+window.addEventListener('pagehide',limparTokenRecuperacao);
+inicializarSessao().then(()=>{if(tok()&&operador()&&!_sessao.autenticado)carregar();});
 </script>
 </body>
 </html>

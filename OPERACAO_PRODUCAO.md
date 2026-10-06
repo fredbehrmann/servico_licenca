@@ -99,10 +99,15 @@ outro valor. Antes de escalar horizontalmente, mova o contador para armazenament
 
 ## 7. Administração e saída de integrante
 
-O painel mantém token e identificador do operador somente em `sessionStorage`, que é apagado ao
-fechar a sessão do navegador. Toda chamada administrativa autenticada grava data, método, alvo,
-resultado HTTP e operador, sem gravar o token nem o corpo da requisição. Em produção o cabeçalho
-`X-Admin-Operador` é obrigatório.
+O painel usa sessão OIDC individual em cookie `HttpOnly`, `Secure` e
+`SameSite=Strict`. Escritas por sessão exigem CSRF, e a recuperação exige MFA e
+grupos separados de operador e aprovador. O token `TFR1` existe somente na
+resposta da emissão e na memória da página, nunca em `sessionStorage`.
+
+O `ADMIN_TOKEN` e o identificador manual continuam somente para compatibilidade
+das rotinas antigas de licença. Eles não autorizam endpoints de recuperação.
+Toda chamada autenticada grava data, método, alvo, resultado e identidade sem
+gravar credencial, solicitação ou token completos.
 
 Para rotação ou saída de integrante:
 
@@ -113,8 +118,10 @@ Para rotação ou saída de integrante:
 5. remover o acesso da pessoa ao Railway, DNS, banco e cofre de segredos;
 6. registrar o procedimento na auditoria interna.
 
-O token compartilhado é aceito apenas como exceção temporária no piloto. Para produção geral,
-substitua-o por autenticação nominal com perfis e revogação individual.
+Ao remover uma pessoa, retire-a dos grupos OIDC, encerre as sessões no provedor
+e revise as emissões recentes. A remoção do grupo impede novas sessões; para um
+incidente ativo, rotacione também `OIDC_SESSION_SECRET` para invalidar todas as
+sessões locais.
 
 ## 8. Registro de validação externa
 
@@ -128,3 +135,7 @@ Os itens abaixo não podem ser concluídos apenas pelo código. Preencha durante
 - [ ] Backup restaurado com sucesso em banco descartável.
 - [ ] Bancos, chaves e tokens comparados e confirmados como distintos.
 - [ ] Railway configurada com uma única réplica em produção.
+- [ ] Cliente com a pública `recuperacao-prod-v2` distribuído antes da ativação.
+- [ ] OIDC, MFA e grupos de operador/aprovador validados com duas contas reais.
+- [ ] Chave de recuperação distinta da chave de licença e pública conferida.
+- [ ] Fluxo `TFRQ1` → aprovação → `TFR1` testado em instalação limpa.

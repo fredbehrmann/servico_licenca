@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.assinador import Assinador
+from app.assinador_recuperacao import AssinadorRecuperacao
 from app.configuracao import ConfiguracaoOperacional, diagnosticar
 from app.repositorio import RepositorioMemoria
 from tests.conftest import ADMIN, INSTALACAO_1, KEY_ID
@@ -53,6 +54,44 @@ def test_producao_exige_token_forte_publica_esperada_e_uma_replica(par_de_teste)
     assert "credencial_admin_fraca_ou_ausente" in problemas
     assert "chave_publica_esperada_ausente" in problemas
     assert "limitador_local_exige_uma_replica" in problemas
+
+
+def test_recuperacao_em_producao_exige_oidc_chave_propria_e_dupla_aprovacao(
+    par_de_teste,
+):
+    pem, _ = par_de_teste
+    assinador = Assinador(pem, KEY_ID)
+    assinador_recuperacao = AssinadorRecuperacao(pem, "recuperacao-v2")
+    cfg = _config(
+        publica_esperada_b64=assinador.chave_publica_b64(),
+        recuperacao_habilitada=True,
+        recuperacao_key_id="recuperacao-v2",
+        recuperacao_publica_esperada_b64=assinador_recuperacao.chave_publica_b64(),
+        recuperacao_dupla_aprovacao=False,
+        oidc_configurado=False,
+    )
+    problemas = diagnosticar(
+        cfg, RepositorioMemoria(), assinador, assinador_recuperacao,
+    ).problemas
+    assert "recuperacao_oidc_nao_configurado" in problemas
+    assert "recuperacao_dupla_aprovacao_obrigatoria" in problemas
+
+
+def test_recuperacao_recusa_privada_diferente_da_publica_configurada(par_de_teste):
+    pem, _ = par_de_teste
+    assinador = Assinador(pem, KEY_ID)
+    assinador_recuperacao = AssinadorRecuperacao(pem, "recuperacao-v2")
+    cfg = _config(
+        ambiente="homologacao",
+        publica_esperada_b64=assinador.chave_publica_b64(),
+        recuperacao_habilitada=True,
+        recuperacao_key_id="recuperacao-v2",
+        recuperacao_publica_esperada_b64="publica-errada",
+    )
+    problemas = diagnosticar(
+        cfg, RepositorioMemoria(), assinador, assinador_recuperacao,
+    ).problemas
+    assert "recuperacao_chave_nao_corresponde_a_publica_esperada" in problemas
 
 
 def test_producao_incompleta_mantem_health_mas_bloqueia_ready_e_consulta(

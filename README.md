@@ -1,6 +1,7 @@
 # Serviço de Licença — TechFisco
 
-Serviço que emite a **licença assinada** consultada pelo app SICOF (Etapa 11). Projeto
+Serviço que emite a **licença assinada** consultada pelo app SICOF e hospeda o
+emissor administrativo de tokens de recuperação de senha. Projeto
 **separado** do app: recebe os quatro campos da requisição, decide o status contra a allowlist,
 assina com a chave privada de produção e devolve a resposta. É o **único componente exposto à
 internet** — merece tratamento de serviço público (limite de requisições, registro de tentativas,
@@ -30,19 +31,23 @@ o startup; somente as alterações aditivas e versionadas do esquema são aplica
 - `POST /admin/revogar` `{instalacao_id}` — revoga uma instalação.
 - `POST /admin/revogar-municipio` `{codigo_ibge}` — revoga um município inteiro.
 - `GET /admin/instalacoes` — lista as autorizadas.
+- `POST /admin/recuperacoes/validar` e `/preparar` — valida o `TFRQ1` e registra
+  o atendimento sem persistir o desafio aberto.
+- `POST /admin/recuperacoes/{request_id}/aprovar` e `/emitir` — exige segundo
+  operador, MFA e emite o `TFR1` uma única vez.
+- `GET /admin/recuperacoes` — histórico saneado, sem pedido ou token completos.
 - `GET /health` — informa apenas que o processo está vivo, sem revelar ambiente ou chave.
 - `GET /ready` — prontidão real: configuração, chave/par esperado, banco e migrações.
 
-- `GET /admin` — **painel web** de administração (página única). Cole o `ADMIN_TOKEN` e
-  gerencie pela tela: crie e renove contratos, associe instalações, cadastre contingência, altere
-  estados e consulte o histórico. A allowlist antiga permanece identificada numa seção separada
-  somente durante a transição para a Etapa 4.
+- `GET /admin` — **painel web único** para licenças e recuperação. A recuperação
+  exige sessão corporativa OIDC, MFA e perfil individual; o `ADMIN_TOKEN`
+  compartilhado permanece somente para rotinas legadas de licença.
 
-Endpoints `/admin/*` exigem cabeçalho `Authorization: Bearer <ADMIN_TOKEN>`. Em produção também
-exigem `X-Admin-Operador`, preenchido pelo painel para identificar quem realizou a ação. O
-`GET /admin`
-(a página) é público — é só o formulário; nenhum dado carrega sem o token, que fica no navegador
-e vai como cabeçalho nas chamadas. Acesse em `https://licenca.techfisco.com.br/admin`.
+Os endpoints de licença aceitam sessão OIDC com o perfil `licencas_operador` e,
+temporariamente, `Authorization: Bearer <ADMIN_TOKEN>`. Os endpoints de
+recuperação nunca aceitam o token compartilhado: a identidade vem das claims
+OIDC validadas pelo servidor. A página `/admin` é um shell público e não carrega
+dados sem autenticação. Acesse em `https://licenca.techfisco.com.br/admin`.
 
 ## Validação das entradas
 
@@ -88,6 +93,22 @@ Erros de entrada respondem 400/422 sem rastreamento. Uma falha interna imprevist
 | `LICENCA_REPLICAS` | **sim em produção** | — | Deve ser `1` enquanto o limitador for local ao processo. |
 | `LICENCA_RETENCAO_TENTATIVAS_DIAS` | não | `90` | Retenção das consultas registradas. |
 | `LICENCA_RETENCAO_AUDITORIA_DIAS` | não | `730` | Retenção de eventos de licença e ações administrativas. |
+| `RECUPERACAO_HABILITADA` | não | `false` | Só habilite depois que o cliente com a pública v2 estiver distribuído. |
+| `RECUPERACAO_PRIVADA_PEM` | sim quando habilitada | — | PEM Ed25519 exclusivo da recuperação; nunca reutilize `LICENCA_PRIVADA_PEM`. |
+| `RECUPERACAO_KEY_ID` | sim quando habilitada | — | Em produção: `recuperacao-prod-v2`. |
+| `RECUPERACAO_PUBLICA_B64_ESPERADA` | sim quando habilitada | — | Confere o par antes de deixar `/ready` saudável. |
+| `RECUPERACAO_TOKEN_TTL_SEGUNDOS` | não | `900` | Validade máxima do token; valores acima de 900 são recusados. |
+| `RECUPERACAO_RATE_MAX` | não | `5` | Preparações por operador ou instalação na janela. |
+| `RECUPERACAO_RATE_JANELA_S` | não | `3600` | Janela persistente do limite. |
+| `RECUPERACAO_DUPLA_APROVACAO` | não | `true` | Obrigatoriamente `true` em produção. |
+| `OIDC_HABILITADO` | sim para recuperação | — | Habilita Authorization Code + PKCE. |
+| `OIDC_ISSUER`, `OIDC_AUTHORIZATION_ENDPOINT`, `OIDC_TOKEN_ENDPOINT`, `OIDC_JWKS_URI` | sim para recuperação | — | Metadados do provedor OIDC. |
+| `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URI` | sim para recuperação | — | Cliente web confidencial e callback `/admin/callback`. |
+| `OIDC_SESSION_SECRET` | sim para recuperação | — | Segredo aleatório de ao menos 32 caracteres para assinar a sessão. |
+| `OIDC_GRUPO_LICENCAS_OPERADOR` | não | — | IDs de grupos autorizados a manter licenças, separados por vírgula. |
+| `OIDC_GRUPO_RECUPERACAO_OPERADOR` | sim para recuperação | — | Grupos que preparam atendimentos. |
+| `OIDC_GRUPO_RECUPERACAO_APROVADOR` | sim para recuperação | — | Grupos que aprovam e emitem. |
+| `OIDC_GRUPO_AUDITORIA_LEITURA` | não | — | Grupos com consulta do histórico. |
 
 ## Deploy na Railway
 
@@ -98,6 +119,9 @@ Erros de entrada respondem 400/422 sem rastreamento. Uma falha interna imprevist
 3. **Segredos.** Em *Variables*, defina `LICENCA_PRIVADA_PEM` (cole o PEM inteiro, multilinha — a
    Railway aceita), `LICENCA_KEY_ID`, `LICENCA_PUBLICA_B64_ESPERADA`,
    `LICENCA_AMBIENTE=producao`, `LICENCA_REPLICAS=1` e `ADMIN_TOKEN` (segredo aleatório forte).
+   Configure os segredos `RECUPERACAO_*` e `OIDC_*` descritos em
+   [`RECUPERACAO_SENHA.md`](RECUPERACAO_SENHA.md), inicialmente com
+   `RECUPERACAO_HABILITADA=false`.
 4. **Start.** O `Procfile`/`railway.json` já sobem `uvicorn app.main:app`. O healthcheck de deploy
    usa `/ready`; `/health` sozinho não autoriza tráfego.
 5. **Domínio.** Em *Settings → Networking*, adicione o domínio custom
