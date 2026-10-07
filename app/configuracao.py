@@ -52,7 +52,7 @@ class ConfiguracaoOperacional:
     recuperacao_token_ttl_s: int = 900
     recuperacao_rate_max: int = 5
     recuperacao_rate_janela_s: int = 3600
-    recuperacao_dupla_aprovacao: bool = True
+    recuperacao_dupla_aprovacao: bool = False
     oidc_configurado: bool = False
 
 
@@ -138,11 +138,9 @@ def diagnosticar(
             problemas.append("quantidade_replicas_nao_definida")
         elif cfg.replicas != 1:
             problemas.append("limitador_local_exige_uma_replica")
-        if cfg.recuperacao_habilitada:
-            if not cfg.oidc_configurado:
-                problemas.append("recuperacao_oidc_nao_configurado")
-            if not cfg.recuperacao_dupla_aprovacao:
-                problemas.append("recuperacao_dupla_aprovacao_obrigatoria")
+        # Temporariamente a recuperação usa o mesmo ADMIN_TOKEN forte exigido
+        # acima. OIDC/MFA e dupla aprovação voltarão a ser obrigatórios quando
+        # a autenticação administrativa individual for reativada.
 
     try:
         repo_pronto = repo.pronto()

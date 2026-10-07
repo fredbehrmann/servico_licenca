@@ -129,10 +129,8 @@ _TEMPLATE = """<!doctype html>
 
   <div class="cartao" id="box-acesso">
     <h2>Acesso</h2>
-    <div id="sessao-info" class="identidade">Use sua conta corporativa para operações sensíveis.</div>
-    <button id="btn-oidc" onclick="location.href='/admin/login'">Entrar com conta corporativa</button>
-    <hr class="separador">
-    <div class="vazio">A credencial compartilhada abaixo permanece apenas para as rotinas legadas de licença. Ela não autoriza recuperação de senha.</div>
+    <div id="sessao-info" class="identidade">Informe o operador responsável e o ADMIN_TOKEN. A credencial fica somente nesta aba do navegador.</div>
+    <div class="vazio">Modo temporário: a mesma credencial administrativa autoriza licenças e recuperação de senha.</div>
     <label>Operador responsável</label>
     <input id="operador" placeholder="seu nome ou identificador corporativo" autocomplete="username">
     <label>Token de administração</label>
@@ -265,7 +263,7 @@ _TEMPLATE = """<!doctype html>
         </div>
         <div class="etapas">
           <div class="etapa"><b>1. Validar</b><span>Confira a solicitação gerada pelo SICOF.</span></div>
-          <div class="etapa"><b>2. Aprovar</b><span>Outro operador revisa o atendimento.</span></div>
+          <div class="etapa"><b>2. Aprovar</b><span>Revise e confirme os dados do atendimento.</span></div>
           <div class="etapa"><b>3. Emitir</b><span>O token aparece uma única vez por 15 minutos.</span></div>
         </div>
         <div class="mensagem-fluxo">O suporte nunca deve pedir a senha atual ou a nova senha do usuário.</div>
@@ -295,7 +293,7 @@ _TEMPLATE = """<!doctype html>
             <label><input id="rec_canal" type="checkbox"> O retorno será enviado somente pelo canal oficial confirmado.</label>
             <label><input id="rec_escalonamento" type="checkbox"> A exceção para instalação desconhecida foi escalonada e documentada.</label>
           </div>
-          <button id="rec_btn_preparar" style="margin-top:10px" onclick="prepararRecuperacao()">Preparar para aprovação</button>
+          <button id="rec_btn_preparar" style="margin-top:10px" onclick="prepararRecuperacao()">Preparar para emissão</button>
         </fieldset>
       </div>
 
@@ -322,7 +320,7 @@ _TEMPLATE = """<!doctype html>
         <h2>Histórico saneado <span class="dir"><button id="rec_btn_historico" class="sec peq" disabled onclick="carregarRecuperacoes()">Atualizar</button></span></h2>
         <div class="tabela-scroll"><table>
           <thead><tr><th>Atualização</th><th>Protocolo</th><th>Instalação</th><th>Estado</th><th>Responsáveis</th><th></th></tr></thead>
-          <tbody id="tab-rec"><tr><td colspan="6" class="vazio">Entre com a conta corporativa para consultar.</td></tr></tbody>
+          <tbody id="tab-rec"><tr><td colspan="6" class="vazio">Informe o ADMIN_TOKEN para consultar.</td></tr></tbody>
         </table></div>
       </div>
     </section>
@@ -380,59 +378,62 @@ async function chamar(metodo, url, corpo){
   return dados;
 }
 
-function entrar(){
+async function entrar(){
   const t = document.getElementById('token').value.trim();
   const op = document.getElementById('operador').value.trim();
   if (!t){ aviso('Cole o token primeiro.', false); return; }
   if (!op){ aviso('Informe quem está realizando a operação.', false); return; }
   sessionStorage.setItem('admtok', t);
   sessionStorage.setItem('admoperador', op);
-  carregar();
+  atualizarDisponibilidadeRecuperacao();
+  await carregar();
+  abrirArea('recuperacao');
+  await carregarRecuperacoes();
 }
 async function sair(){
   if(_sessao.autenticado){ try{ await chamar('POST','/admin/logout',{}); }catch(e){} }
   sessionStorage.removeItem('admtok'); sessionStorage.removeItem('admoperador');
   limparTokenRecuperacao(); _csrf=''; _sessao={autenticado:false,papeis:[]};
   document.getElementById('token').value=''; document.getElementById('operador').value='';
-  document.getElementById('sessao-info').textContent='Sessão encerrada.';
+  document.getElementById('sessao-info').textContent='Credencial removida desta aba.';
   await inicializarSessao();
 }
 
 function temPapel(papel){ return (_sessao.papeis||[]).includes(papel); }
-function podeRecuperacao(){ return temPapel('recuperacao_operador')||temPapel('recuperacao_aprovador')||temPapel('auditoria_leitura'); }
+function podeRecuperacao(){ return !!tok()&&!!operador(); }
 function podeLicencas(){ return !!tok()||(_sessao.autenticado&&temPapel('licencas_operador')); }
-function recuperacaoDisponivel(){ return _sessao.autenticado&&_sessao.recuperacao_habilitada===true&&podeRecuperacao(); }
+function recuperacaoDisponivel(){ return _sessao.recuperacao_habilitada===true&&podeRecuperacao(); }
 function atualizarDisponibilidadeRecuperacao(){
   const alvo=document.getElementById('rec_disponibilidade');
-  const operador=recuperacaoDisponivel()&&temPapel('recuperacao_operador');
-  const aprovador=recuperacaoDisponivel()&&temPapel('recuperacao_aprovador');
+  const autorizado=recuperacaoDisponivel();
   let texto=''; let ok=false;
   if(_sessao.recuperacao_habilitada!==true){
-    texto='Módulo instalado, mas a emissão está desabilitada neste ambiente. Configure OIDC e a chave de recuperação antes de habilitá-la.';
-  }else if(_sessao.oidc_habilitado!==true){
-    texto='Módulo instalado, aguardando a configuração do acesso corporativo.';
-  }else if(!_sessao.autenticado){
-    texto='Entre com sua conta corporativa para validar ou acompanhar uma recuperação.';
-  }else if(!podeRecuperacao()){
-    texto='Sua conta está autenticada, mas não possui perfil de recuperação de senha.';
+    texto='Módulo instalado, mas a emissão está desabilitada neste ambiente. Configure a chave de recuperação antes de habilitá-la.';
+  }else if(!tok()){
+    texto='Informe o ADMIN_TOKEN para validar ou acompanhar uma recuperação.';
+  }else if(!operador()){
+    texto='Informe o operador responsável para manter o registro de auditoria.';
   }else{
-    texto='Módulo habilitado. As ações disponíveis respeitam o perfil da sua conta.'; ok=true;
+    texto=_sessao.recuperacao_dupla_aprovacao===true
+      ? 'Módulo habilitado com ADMIN_TOKEN. Outro identificador de operador deverá aprovar o atendimento.'
+      : 'Módulo habilitado no modo temporário com ADMIN_TOKEN. Revise cuidadosamente antes de emitir.';
+    ok=true;
   }
   alvo.textContent=texto; alvo.className='mensagem-fluxo '+(ok?'ok':'');
-  document.getElementById('rec_solicitacao').disabled=!operador;
-  document.getElementById('rec_btn_validar').disabled=!operador;
+  document.getElementById('rec_solicitacao').disabled=!autorizado;
+  document.getElementById('rec_btn_validar').disabled=!autorizado;
   document.getElementById('rec_preparo').disabled=true;
-  document.getElementById('rec_confirmar_aprovacao').disabled=!aprovador;
-  document.getElementById('rec_confirmacao').disabled=!aprovador;
+  document.getElementById('rec_confirmar_aprovacao').disabled=!autorizado;
+  document.getElementById('rec_confirmacao').disabled=!autorizado;
   document.getElementById('rec_btn_historico').disabled=!recuperacaoDisponivel();
-  if(!aprovador){
+  if(!autorizado){
     document.getElementById('rec_btn_aprovar').disabled=true;
     document.getElementById('rec_btn_emitir').disabled=true;
   }
 }
 function abrirArea(area){
   const rec=area==='recuperacao';
-  if(!rec&&!podeLicencas()){ aviso('Entre com uma conta autorizada ou informe a credencial legada para acessar as licenças.',false); return; }
+  if(!rec&&!podeLicencas()){ aviso('Informe o ADMIN_TOKEN para acessar as licenças.',false); return; }
   document.getElementById('area-licencas').style.display=rec?'none':'';
   document.getElementById('area-recuperacao').style.display=rec?'':'none';
   document.getElementById('aba-licencas').className=rec?'':'ativa';
@@ -446,24 +447,22 @@ async function inicializarSessao(){
     _sessao=await r.json(); _csrf=_sessao.csrf||'';
   }catch(e){ _sessao={autenticado:false,papeis:[]}; }
   const info=document.getElementById('sessao-info');
-  const btn=document.getElementById('btn-oidc');
   document.getElementById('painel').style.display='';
   document.getElementById('aba-recuperacao').style.display='';
   if(_sessao.autenticado){
     info.textContent='Conectado como '+(_sessao.nome||'operador')+(_sessao.mfa?' · MFA confirmado':'');
-    btn.style.display='none';
     document.getElementById('aba-licencas').disabled=!temPapel('licencas_operador');
     atualizarDisponibilidadeRecuperacao();
     if(temPapel('licencas_operador'))carregar(); else if(podeRecuperacao())abrirArea('recuperacao');
   }else{
-    btn.style.display=_sessao.oidc_habilitado===false?'none':'';
+    info.textContent='Informe o operador responsável e o ADMIN_TOKEN. A credencial fica somente nesta aba do navegador.';
     document.getElementById('aba-licencas').disabled=!podeLicencas();
     abrirArea('recuperacao');
   }
 }
 
 async function carregar(){
-  if (!tok()&&!(_sessao.autenticado&&temPapel('licencas_operador'))){ aviso('Entre com sua conta ou informe a credencial legada.', false); return; }
+  if (!tok()&&!(_sessao.autenticado&&temPapel('licencas_operador'))){ aviso('Informe o ADMIN_TOKEN.', false); return; }
   try{
     const [inst, mr, tent, lic, mig, contexto] = await Promise.all([
       chamar('GET','/admin/instalacoes'),
@@ -777,7 +776,7 @@ async function validarRecuperacao(){
     resumoRecuperacao(r.solicitacao); document.getElementById('rec_preparo').disabled=false;
     mensagemRecuperacao('Solicitação válida. Confira o contexto antes de registrar o atendimento.',true);
   }catch(e){ document.getElementById('rec_preparo').disabled=true; }
-  finally{ botao.disabled=!(recuperacaoDisponivel()&&temPapel('recuperacao_operador')); }
+  finally{ botao.disabled=!recuperacaoDisponivel(); }
 }
 async function prepararRecuperacao(){
   const solicitacao=document.getElementById('rec_solicitacao').value.trim();
@@ -791,18 +790,18 @@ async function prepararRecuperacao(){
   try{
     const r=await chamar('POST','/admin/recuperacoes/preparar',corpo);
     _recuperacaoAtual=r.recuperacao; atualizarSelecionada();
-    mensagemRecuperacao('Atendimento preparado. Outro operador deve aprová-lo.',true);
+    mensagemRecuperacao('Atendimento preparado. Revise os dados antes de aprovar.',true);
     await carregarRecuperacoes();
   }catch(e){}
-  finally{ botao.disabled=!(recuperacaoDisponivel()&&temPapel('recuperacao_operador')); }
+  finally{ botao.disabled=!recuperacaoDisponivel(); }
 }
 function atualizarSelecionada(){
   const alvo=document.getElementById('rec_selecionada');
   if(!_recuperacaoAtual){ alvo.textContent='Nenhuma solicitação preparada selecionada.'; return; }
   alvo.textContent='Solicitação '+_recuperacaoAtual.request_id+' · estado: '+_recuperacaoAtual.estado+
     (_recuperacaoAtual.protocolo?' · protocolo: '+_recuperacaoAtual.protocolo:'');
-  const aprovar=_recuperacaoAtual.estado==='preparada'&&recuperacaoDisponivel()&&temPapel('recuperacao_aprovador');
-  const emitir=_recuperacaoAtual.estado==='aprovada'&&recuperacaoDisponivel()&&temPapel('recuperacao_aprovador');
+  const aprovar=_recuperacaoAtual.estado==='preparada'&&recuperacaoDisponivel();
+  const emitir=_recuperacaoAtual.estado==='aprovada'&&recuperacaoDisponivel();
   document.getElementById('rec_btn_aprovar').disabled=!aprovar;
   document.getElementById('rec_btn_emitir').disabled=!emitir;
 }

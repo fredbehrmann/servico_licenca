@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from app import admin_auth, recuperacao_contrato
 from app.painel import PAGINA_ADMIN
 from app.recuperacao_senha import digest_texto
-from tests.conftest import INSTALACAO_1
+from tests.conftest import ADMIN, INSTALACAO_1
 
 
 def _solicitacao(*, instalacao: str = INSTALACAO_1, agora: int | None = None) -> str:
@@ -49,6 +49,13 @@ def _autenticar(c, main, subject: str, papeis: set[str], *, mfa: bool = True):
     return {"X-CSRF-Token": csrf}
 
 
+def _headers_token(operador: str = "operador-1", token: str = ADMIN) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-Admin-Operador": operador,
+    }
+
+
 def _preparar(c, headers, solicitacao: str):
     return c.post("/admin/recuperacoes/preparar", headers=headers, json={
         "solicitacao": solicitacao,
@@ -65,36 +72,28 @@ def test_painel_mostra_modulo_mesmo_antes_da_configuracao():
     assert '<section id="area-recuperacao">' in PAGINA_ADMIN
     assert 'id="rec_disponibilidade"' in PAGINA_ADMIN
     assert 'Módulo instalado, mas a emissão está desabilitada' in PAGINA_ADMIN
+    assert 'mesma credencial administrativa autoriza licenças e recuperação' in PAGINA_ADMIN
 
 
-def test_recuperacao_exige_sessao_corporativa(cliente):
+def test_recuperacao_exige_admin_token(cliente):
     c, _, _ = cliente
     resposta = c.post("/admin/recuperacoes/validar", json={
         "solicitacao": _solicitacao(),
     })
     assert resposta.status_code == 401
-
-
-def test_recuperacao_exige_mfa(cliente):
-    c, _, main = cliente
-    headers = _autenticar(
-        c, main, "operador-sem-mfa", {admin_auth.PAPEL_RECUPERACAO_OPERADOR}, mfa=False,
-    )
-    resposta = c.post("/admin/recuperacoes/validar", headers=headers, json={
+    invalida = c.post("/admin/recuperacoes/validar", headers=_headers_token(token="errado"), json={
         "solicitacao": _solicitacao(),
     })
-    assert resposta.status_code == 403
-    assert "multifator" in resposta.json()["detail"]
+    assert invalida.status_code == 401
+    assert "token administrativo inválido" in invalida.json()["detail"]
 
 
-def test_fluxo_com_dupla_aprovacao_emite_token_uma_vez(cliente):
+def test_fluxo_com_admin_token_emite_token_uma_vez(cliente):
     c, _, main = cliente
     main.estado.repo.autorizar(INSTALACAO_1, "2927408", None)
     solicitacao = _solicitacao()
 
-    headers_operador = _autenticar(
-        c, main, "operador-1", {admin_auth.PAPEL_RECUPERACAO_OPERADOR},
-    )
+    headers_operador = _headers_token("operador-1")
     validada = c.post("/admin/recuperacoes/validar", headers=headers_operador, json={
         "solicitacao": solicitacao,
     })
@@ -108,19 +107,9 @@ def test_fluxo_com_dupla_aprovacao_emite_token_uma_vez(cliente):
     assert registro["estado"] == "preparada"
     assert "desafio" not in preparada.text
 
-    autoaprovacao = c.post(
-        f"/admin/recuperacoes/{request_id}/aprovar",
-        headers=headers_operador,
-        json={"confirmar": True},
-    )
-    assert autoaprovacao.status_code == 403  # operador não possui papel de aprovador
-
-    headers_aprovador = _autenticar(
-        c, main, "aprovador-2", {admin_auth.PAPEL_RECUPERACAO_APROVADOR},
-    )
     aprovada = c.post(
         f"/admin/recuperacoes/{request_id}/aprovar",
-        headers=headers_aprovador,
+        headers=headers_operador,
         json={"confirmar": True},
     )
     assert aprovada.status_code == 200, aprovada.text
@@ -128,7 +117,7 @@ def test_fluxo_com_dupla_aprovacao_emite_token_uma_vez(cliente):
 
     emitida = c.post(
         f"/admin/recuperacoes/{request_id}/emitir",
-        headers=headers_aprovador,
+        headers=headers_operador,
         json={"solicitacao": solicitacao, "confirmacao": "EMITIR"},
     )
     assert emitida.status_code == 200, emitida.text
@@ -145,7 +134,7 @@ def test_fluxo_com_dupla_aprovacao_emite_token_uma_vez(cliente):
 
     repetida = c.post(
         f"/admin/recuperacoes/{request_id}/emitir",
-        headers=headers_aprovador,
+        headers=headers_operador,
         json={"solicitacao": solicitacao, "confirmacao": "EMITIR"},
     )
     assert repetida.status_code == 409
@@ -157,15 +146,11 @@ def test_fluxo_com_dupla_aprovacao_emite_token_uma_vez(cliente):
     assert all(token not in str(evento) for evento in main.estado.repo.listar_auditoria_admin(100))
 
 
-def test_mesma_identidade_nao_pode_preparar_e_aprovar(cliente):
+def test_modo_temporario_permite_mesmo_operador_preparar_e_aprovar(cliente):
     c, _, main = cliente
     main.estado.repo.autorizar(INSTALACAO_1, "2927408", None)
     solicitacao = _solicitacao()
-    papeis = {
-        admin_auth.PAPEL_RECUPERACAO_OPERADOR,
-        admin_auth.PAPEL_RECUPERACAO_APROVADOR,
-    }
-    headers = _autenticar(c, main, "operador-duplo", papeis)
+    headers = _headers_token("operador-unico")
     preparada = _preparar(c, headers, solicitacao)
     request_id = preparada.json()["recuperacao"]["request_id"]
     resposta = c.post(
@@ -173,15 +158,13 @@ def test_mesma_identidade_nao_pode_preparar_e_aprovar(cliente):
         headers=headers,
         json={"confirmar": True},
     )
-    assert resposta.status_code == 409
-    assert "não pode aprovar" in resposta.json()["detail"]
+    assert resposta.status_code == 200
+    assert resposta.json()["recuperacao"]["aprovador"] == "operador-unico"
 
 
 def test_instalacao_desconhecida_exige_escalonamento(cliente):
     c, _, main = cliente
-    headers = _autenticar(
-        c, main, "operador-1", {admin_auth.PAPEL_RECUPERACAO_OPERADOR},
-    )
+    headers = _headers_token("operador-1")
     resposta = _preparar(c, headers, _solicitacao(instalacao="instalacao-desconhecida"))
     assert resposta.status_code == 422
     assert "escalonamento" in resposta.json()["detail"].lower()

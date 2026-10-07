@@ -161,7 +161,7 @@ def montar_estado() -> None:
     estado.recuperacao_rate_max = _int_env("RECUPERACAO_RATE_MAX", 5)
     estado.recuperacao_rate_janela_s = _int_env("RECUPERACAO_RATE_JANELA_S", 3600)
     estado.recuperacao_dupla_aprovacao = _bool_env(
-        "RECUPERACAO_DUPLA_APROVACAO", True,
+        "RECUPERACAO_DUPLA_APROVACAO", False,
     )
     estado.oidc = admin_auth.ConfiguracaoOidc(
         habilitado=_bool_env("OIDC_HABILITADO", False),
@@ -256,46 +256,6 @@ def _exigir_csrf(request: Request, identidade: admin_auth.IdentidadeAdmin) -> No
         raise HTTPException(status_code=403, detail="proteção CSRF inválida")
 
 
-def _exigir_identidade_recuperacao(
-    request: Request, papeis: set[str],
-) -> admin_auth.IdentidadeAdmin:
-    if not estado.recuperacao_habilitada:
-        raise HTTPException(status_code=503, detail="recuperação administrativa desabilitada")
-    if not _atualizar_prontidao().pronto or estado.assinador_recuperacao is None:
-        raise HTTPException(status_code=503, detail="recuperação temporariamente indisponível")
-    identidade = _identidade_sessao(request)
-    if identidade is None:
-        raise HTTPException(status_code=401, detail="autenticação corporativa obrigatória")
-    request.state.admin_operador = _operador_identidade(identidade)
-    request.state.admin_identidade = identidade
-    if not identidade.mfa:
-        raise HTTPException(status_code=403, detail="autenticação multifator obrigatória")
-    if not papeis.intersection(identidade.papeis):
-        raise HTTPException(status_code=403, detail="perfil sem permissão para esta operação")
-    _exigir_csrf(request, identidade)
-    return identidade
-
-
-def exigir_recuperacao_operador(request: Request) -> admin_auth.IdentidadeAdmin:
-    return _exigir_identidade_recuperacao(
-        request, {admin_auth.PAPEL_RECUPERACAO_OPERADOR},
-    )
-
-
-def exigir_recuperacao_aprovador(request: Request) -> admin_auth.IdentidadeAdmin:
-    return _exigir_identidade_recuperacao(
-        request, {admin_auth.PAPEL_RECUPERACAO_APROVADOR},
-    )
-
-
-def exigir_recuperacao_leitura(request: Request) -> admin_auth.IdentidadeAdmin:
-    return _exigir_identidade_recuperacao(request, {
-        admin_auth.PAPEL_RECUPERACAO_OPERADOR,
-        admin_auth.PAPEL_RECUPERACAO_APROVADOR,
-        admin_auth.PAPEL_AUDITORIA,
-    })
-
-
 @app.on_event("startup")
 def _startup() -> None:
     montar_estado()
@@ -371,12 +331,16 @@ async def admin_sessao(request: Request) -> dict[str, Any]:
             "autenticado": False,
             "oidc_habilitado": estado.oidc.configurado,
             "recuperacao_habilitada": estado.recuperacao_habilitada,
+            "recuperacao_autenticacao": "admin_token",
+            "recuperacao_dupla_aprovacao": estado.recuperacao_dupla_aprovacao,
         }
     return {
         "ok": True,
         "autenticado": True,
         "oidc_habilitado": estado.oidc.configurado,
         "recuperacao_habilitada": estado.recuperacao_habilitada,
+        "recuperacao_autenticacao": "admin_token",
+        "recuperacao_dupla_aprovacao": estado.recuperacao_dupla_aprovacao,
         "nome": identidade.nome,
         "papeis": sorted(identidade.papeis),
         "mfa": identidade.mfa,
@@ -501,21 +465,11 @@ async def consulta(request: Request) -> JSONResponse:
 # ─── Administração (allowlist) ───────────────────────────────────────────────
 
 
-def exigir_admin(
+def _exigir_admin_token(
     request: Request,
-    authorization: str = Header(default=""),
-    x_admin_operador: str = Header(default="", alias="X-Admin-Operador"),
-) -> None:
-    if not _atualizar_prontidao().pronto:
-        raise HTTPException(status_code=503, detail="serviço temporariamente indisponível")
-    identidade = _identidade_sessao(request)
-    if identidade is not None:
-        if not identidade.mfa or not identidade.possui(admin_auth.PAPEL_LICENCAS):
-            raise HTTPException(status_code=403, detail="perfil administrativo insuficiente")
-        _exigir_csrf(request, identidade)
-        request.state.admin_operador = _operador_identidade(identidade)
-        request.state.admin_identidade = identidade
-        return
+    authorization: str,
+    x_admin_operador: str,
+) -> str:
     esperado = estado.admin_token
     if not esperado:
         raise HTTPException(status_code=503, detail="ADMIN_TOKEN não configurado")
@@ -535,7 +489,40 @@ def exigir_admin(
         x_admin_operador,
         obrigatorio=estado.cfg.ambiente == contrato.AMBIENTE_PRODUCAO,
     )
-    request.state.admin_operador = operador or "token-compartilhado-homologacao"
+    identificado = operador or "token-compartilhado-homologacao"
+    request.state.admin_operador = identificado
+    return identificado
+
+
+def exigir_admin(
+    request: Request,
+    authorization: str = Header(default=""),
+    x_admin_operador: str = Header(default="", alias="X-Admin-Operador"),
+) -> None:
+    if not _atualizar_prontidao().pronto:
+        raise HTTPException(status_code=503, detail="serviço temporariamente indisponível")
+    identidade = _identidade_sessao(request)
+    if identidade is not None:
+        if not identidade.mfa or not identidade.possui(admin_auth.PAPEL_LICENCAS):
+            raise HTTPException(status_code=403, detail="perfil administrativo insuficiente")
+        _exigir_csrf(request, identidade)
+        request.state.admin_operador = _operador_identidade(identidade)
+        request.state.admin_identidade = identidade
+        return
+    _exigir_admin_token(request, authorization, x_admin_operador)
+
+
+def exigir_recuperacao_admin_token(
+    request: Request,
+    authorization: str = Header(default=""),
+    x_admin_operador: str = Header(default="", alias="X-Admin-Operador"),
+) -> str:
+    """Proteção temporária da recuperação por ADMIN_TOKEN compartilhado."""
+    if not estado.recuperacao_habilitada:
+        raise HTTPException(status_code=503, detail="recuperação administrativa desabilitada")
+    if not _atualizar_prontidao().pronto or estado.assinador_recuperacao is None:
+        raise HTTPException(status_code=503, detail="recuperação temporariamente indisponível")
+    return _exigir_admin_token(request, authorization, x_admin_operador)
 
 
 @app.middleware("http")
@@ -790,14 +777,14 @@ def _validar_pedido_recuperacao(corpo: dict[str, Any]) -> tuple[str, dict[str, A
 @app.post("/admin/recuperacoes/validar")
 async def validar_recuperacao_admin(
     request: Request,
-    identidade: admin_auth.IdentidadeAdmin = Depends(exigir_recuperacao_operador),
+    operador: str = Depends(exigir_recuperacao_admin_token),
 ) -> dict[str, Any]:
     corpo = await _ler_objeto_json(request, limite=_LIMITE_CORPO_RECUPERACAO)
     _, pedido = _validar_pedido_recuperacao(corpo)
     instalacao, licenca = _contexto_recuperacao(pedido)
     resumo = recuperacao_senha.resumo_solicitacao(pedido, instalacao, licenca)
     _auditar_recuperacao(
-        _operador_identidade(identidade), "recuperacao_validada", "ok",
+        operador, "recuperacao_validada", "ok",
         str(pedido["request_id"]), installation_id=pedido["installation_id"],
         instalacao_conhecida=instalacao is not None,
     )
@@ -807,7 +794,7 @@ async def validar_recuperacao_admin(
 @app.post("/admin/recuperacoes/preparar")
 async def preparar_recuperacao_admin(
     request: Request,
-    identidade: admin_auth.IdentidadeAdmin = Depends(exigir_recuperacao_operador),
+    operador: str = Depends(exigir_recuperacao_admin_token),
 ) -> dict[str, Any]:
     corpo = await _ler_objeto_json(request, limite=_LIMITE_CORPO_RECUPERACAO)
     try:
@@ -824,7 +811,6 @@ async def preparar_recuperacao_admin(
         pedido = recuperacao_senha.validar_solicitacao(texto)
         instalacao, _ = _contexto_recuperacao(pedido)
         agora = int(time.time())
-        operador = _operador_identidade(identidade)
         contagem_operador, contagem_instalacao = estado.repo.contar_recuperacoes_recentes(
             operador,
             str(pedido["installation_id"]),
@@ -867,13 +853,12 @@ async def preparar_recuperacao_admin(
 async def aprovar_recuperacao_admin(
     request_id: str,
     request: Request,
-    identidade: admin_auth.IdentidadeAdmin = Depends(exigir_recuperacao_aprovador),
+    operador: str = Depends(exigir_recuperacao_admin_token),
 ) -> dict[str, Any]:
     request_id = _request_id_recuperacao(request_id)
     corpo = await _ler_objeto_json(request, limite=1024)
     if set(corpo) != {"confirmar"} or corpo.get("confirmar") is not True:
         raise HTTPException(status_code=422, detail="confirmação explícita obrigatória")
-    operador = _operador_identidade(identidade)
     try:
         item = estado.repo.aprovar_recuperacao(
             request_id, operador, int(time.time()), estado.recuperacao_dupla_aprovacao,
@@ -894,7 +879,7 @@ async def aprovar_recuperacao_admin(
 async def emitir_recuperacao_admin(
     request_id: str,
     request: Request,
-    identidade: admin_auth.IdentidadeAdmin = Depends(exigir_recuperacao_aprovador),
+    operador: str = Depends(exigir_recuperacao_admin_token),
 ) -> dict[str, Any]:
     request_id = _request_id_recuperacao(request_id)
     corpo = await _ler_objeto_json(request, limite=_LIMITE_CORPO_RECUPERACAO)
@@ -914,7 +899,6 @@ async def emitir_recuperacao_admin(
         registro = estado.repo.obter_recuperacao(request_id)
         if registro is None:
             raise HTTPException(status_code=404, detail="solicitação não encontrada")
-        operador = _operador_identidade(identidade)
         if not hmac.compare_digest(str(registro.get("aprovador") or ""), operador):
             raise recuperacao_senha.RecuperacaoInvalida(
                 "Somente quem aprovou pode concluir esta emissão."
@@ -966,7 +950,7 @@ async def listar_recuperacoes_admin(
     request: Request,
     limite: int = 100,
     status: str = "",
-    _identidade: admin_auth.IdentidadeAdmin = Depends(exigir_recuperacao_leitura),
+    _operador: str = Depends(exigir_recuperacao_admin_token),
 ) -> dict[str, Any]:
     limite = _validar_limite_listagem(limite)
     if status and status not in _ESTADOS_RECUPERACAO:
@@ -979,7 +963,7 @@ async def listar_recuperacoes_admin(
 async def obter_recuperacao_admin(
     request_id: str,
     request: Request,
-    _identidade: admin_auth.IdentidadeAdmin = Depends(exigir_recuperacao_leitura),
+    _operador: str = Depends(exigir_recuperacao_admin_token),
 ) -> dict[str, Any]:
     request_id = _request_id_recuperacao(request_id)
     item = estado.repo.obter_recuperacao(request_id)

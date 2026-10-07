@@ -33,21 +33,21 @@ o startup; somente as alterações aditivas e versionadas do esquema são aplica
 - `GET /admin/instalacoes` — lista as autorizadas.
 - `POST /admin/recuperacoes/validar` e `/preparar` — valida o `TFRQ1` e registra
   o atendimento sem persistir o desafio aberto.
-- `POST /admin/recuperacoes/{request_id}/aprovar` e `/emitir` — exige segundo
-  operador, MFA e emite o `TFR1` uma única vez.
+- `POST /admin/recuperacoes/{request_id}/aprovar` e `/emitir` — exige confirmação
+  explícita e emite o `TFR1` uma única vez.
 - `GET /admin/recuperacoes` — histórico saneado, sem pedido ou token completos.
 - `GET /health` — informa apenas que o processo está vivo, sem revelar ambiente ou chave.
 - `GET /ready` — prontidão real: configuração, chave/par esperado, banco e migrações.
 
-- `GET /admin` — **painel web único** para licenças e recuperação. A recuperação
-  exige sessão corporativa OIDC, MFA e perfil individual; o `ADMIN_TOKEN`
-  compartilhado permanece somente para rotinas legadas de licença.
+- `GET /admin` — **painel web único** para licenças e recuperação. Temporariamente,
+  ambas as áreas usam o `ADMIN_TOKEN` compartilhado e a identificação declarada
+  no cabeçalho `X-Admin-Operador`.
 
-Os endpoints de licença aceitam sessão OIDC com o perfil `licencas_operador` e,
-temporariamente, `Authorization: Bearer <ADMIN_TOKEN>`. Os endpoints de
-recuperação nunca aceitam o token compartilhado: a identidade vem das claims
-OIDC validadas pelo servidor. A página `/admin` é um shell público e não carrega
-dados sem autenticação. Acesse em `https://licenca.techfisco.com.br/admin`.
+Os endpoints administrativos aceitam temporariamente
+`Authorization: Bearer <ADMIN_TOKEN>`. Em produção, também é obrigatório informar
+`X-Admin-Operador`, usado na auditoria, mas esse identificador não constitui um
+segundo fator de autenticação. A página `/admin` é um shell público e não carrega
+dados sem a credencial correta. Acesse em `https://licenca.techfisco.com.br/admin`.
 
 ## Validação das entradas
 
@@ -100,11 +100,11 @@ Erros de entrada respondem 400/422 sem rastreamento. Uma falha interna imprevist
 | `RECUPERACAO_TOKEN_TTL_SEGUNDOS` | não | `900` | Validade máxima do token; valores acima de 900 são recusados. |
 | `RECUPERACAO_RATE_MAX` | não | `5` | Preparações por operador ou instalação na janela. |
 | `RECUPERACAO_RATE_JANELA_S` | não | `3600` | Janela persistente do limite. |
-| `RECUPERACAO_DUPLA_APROVACAO` | não | `true` | Obrigatoriamente `true` em produção. |
-| `OIDC_HABILITADO` | sim para recuperação | — | Habilita Authorization Code + PKCE. |
-| `OIDC_ISSUER`, `OIDC_AUTHORIZATION_ENDPOINT`, `OIDC_TOKEN_ENDPOINT`, `OIDC_JWKS_URI` | sim para recuperação | — | Metadados do provedor OIDC. |
-| `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URI` | sim para recuperação | — | Cliente web confidencial e callback `/admin/callback`. |
-| `OIDC_SESSION_SECRET` | sim para recuperação | — | Segredo aleatório de ao menos 32 caracteres para assinar a sessão. |
+| `RECUPERACAO_DUPLA_APROVACAO` | não | `false` | Compatibilidade opcional; com token compartilhado não comprova identidades distintas. |
+| `OIDC_HABILITADO` | não | `false` | Autenticação individual futura; não é exigida no modo temporário. |
+| `OIDC_ISSUER`, `OIDC_AUTHORIZATION_ENDPOINT`, `OIDC_TOKEN_ENDPOINT`, `OIDC_JWKS_URI` | não | — | Metadados do provedor OIDC quando essa integração for reativada. |
+| `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URI` | não | — | Cliente web confidencial e callback `/admin/callback`. |
+| `OIDC_SESSION_SECRET` | não | — | Segredo aleatório de ao menos 32 caracteres para assinar a sessão OIDC. |
 | `OIDC_GRUPO_LICENCAS_OPERADOR` | não | — | IDs de grupos autorizados a manter licenças, separados por vírgula. |
 | `OIDC_GRUPO_RECUPERACAO_OPERADOR` | sim para recuperação | — | Grupos que preparam atendimentos. |
 | `OIDC_GRUPO_RECUPERACAO_APROVADOR` | sim para recuperação | — | Grupos que aprovam e emitem. |
@@ -119,7 +119,7 @@ Erros de entrada respondem 400/422 sem rastreamento. Uma falha interna imprevist
 3. **Segredos.** Em *Variables*, defina `LICENCA_PRIVADA_PEM` (cole o PEM inteiro, multilinha — a
    Railway aceita), `LICENCA_KEY_ID`, `LICENCA_PUBLICA_B64_ESPERADA`,
    `LICENCA_AMBIENTE=producao`, `LICENCA_REPLICAS=1` e `ADMIN_TOKEN` (segredo aleatório forte).
-   Configure os segredos `RECUPERACAO_*` e `OIDC_*` descritos em
+   Configure os segredos `RECUPERACAO_*` descritos em
    [`RECUPERACAO_SENHA.md`](RECUPERACAO_SENHA.md), inicialmente com
    `RECUPERACAO_HABILITADA=false`.
 4. **Start.** O `Procfile`/`railway.json` já sobem `uvicorn app.main:app`. O healthcheck de deploy

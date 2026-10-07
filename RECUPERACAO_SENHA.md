@@ -9,6 +9,8 @@
 - O token `TFR1` não altera licença e só vale para a instalação, conta, pedido e
   desafio que o originaram.
 - A privada de recuperação é exclusiva; não use a chave de licenças.
+- Temporariamente, o painel usa `ADMIN_TOKEN` e o operador informado manualmente.
+  Essa identificação serve para auditoria, mas não prova a identidade da pessoa.
 
 ## Chave de produção v2
 
@@ -31,28 +33,29 @@ python .\scripts\gerar_chave_recuperacao.py `
 O script recusa sobrescrita e destino dentro do repositório, e não imprime a
 privada.
 
-## Configuração OIDC
+## Autenticação administrativa temporária
 
-Cadastre um cliente web confidencial no provedor OIDC com callback HTTPS
-`https://<dominio>/admin/callback`. Configure issuer, endpoints de autorização,
-token e JWKS explicitamente. Crie grupos distintos para:
+Configure um `ADMIN_TOKEN` aleatório e exclusivo no cofre da Railway, com pelo
+menos 32 caracteres e alta entropia. O painel envia esse valor como
+`Authorization: Bearer <ADMIN_TOKEN>` e exige o nome ou identificador do operador
+em `X-Admin-Operador` para registrar a auditoria.
 
-- manutenção de licenças;
-- preparação de recuperação;
-- aprovação/emissão de recuperação;
-- leitura de auditoria.
+Enquanto este modo estiver ativo:
 
-Exija MFA no provedor. O serviço também confere `amr=mfa` ou `acrs=c1` no ID
-token. A pessoa que prepara não pode aprovar a própria solicitação.
+- não compartilhe o token por e-mail, chat ou arquivo;
+- restrinja o acesso à Railway e troque o token se houver suspeita de exposição;
+- mantenha `RECUPERACAO_DUPLA_APROVACAO=false`, pois um token compartilhado não
+  consegue provar que duas pessoas diferentes participaram;
+- trate OIDC, MFA e papéis individuais como endurecimento pendente.
 
 ## Ordem de ativação
 
 1. Distribua o SICOF que contém as públicas v1 e v2.
 2. Aplique a migração 6 no PostgreSQL mantendo
    `RECUPERACAO_HABILITADA=false`.
-3. Configure OIDC e a privada v2 na Railway.
+3. Configure `ADMIN_TOKEN` forte e a privada v2 na Railway.
 4. Confirme que a pública derivada é exatamente a registrada acima.
-5. Habilite em homologação e execute o ciclo completo com duas contas.
+5. Habilite em homologação e execute o ciclo completo com o token administrativo.
 6. Habilite um grupo piloto em produção.
 7. Mantenha o emissor DPAPI v1 somente para clientes antigos durante a janela
    de transição.
@@ -64,8 +67,8 @@ token. A pessoa que prepara não pode aprovar a própria solicitação.
 3. Confirme a identidade por método permitido e registre protocolo e
    justificativa.
 4. Prepare o atendimento.
-5. Um segundo operador entra com MFA, revisa e aprova.
-6. O aprovador cola novamente o `TFRQ1`, digita `EMITIR` e gera o token.
+5. O operador revisa os dados registrados e confirma a aprovação.
+6. O operador cola novamente o `TFRQ1`, digita `EMITIR` e gera o token.
 7. Copie imediatamente o `TFR1`; a tela não o mostrará novamente.
 8. Entregue-o somente pelo canal oficial. O usuário define a própria senha.
 
@@ -80,4 +83,3 @@ auditoria, gere outro par, publique a nova pública no cliente e somente depois
 retome a emissão. Como a validação é offline, um token já emitido não pode ser
 recolhido pelo serviço; a contenção usa validade curta, vínculo estrito e uso
 único.
-

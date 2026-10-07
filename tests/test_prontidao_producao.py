@@ -56,7 +56,7 @@ def test_producao_exige_token_forte_publica_esperada_e_uma_replica(par_de_teste)
     assert "limitador_local_exige_uma_replica" in problemas
 
 
-def test_recuperacao_em_producao_exige_oidc_chave_propria_e_dupla_aprovacao(
+def test_recuperacao_em_producao_aceita_admin_token_sem_oidc_ou_dupla_aprovacao(
     par_de_teste,
 ):
     pem, _ = par_de_teste
@@ -73,8 +73,9 @@ def test_recuperacao_em_producao_exige_oidc_chave_propria_e_dupla_aprovacao(
     problemas = diagnosticar(
         cfg, RepositorioMemoria(), assinador, assinador_recuperacao,
     ).problemas
-    assert "recuperacao_oidc_nao_configurado" in problemas
-    assert "recuperacao_dupla_aprovacao_obrigatoria" in problemas
+    assert "credencial_admin_fraca_ou_ausente" not in problemas
+    assert "recuperacao_oidc_nao_configurado" not in problemas
+    assert "recuperacao_dupla_aprovacao_obrigatoria" not in problemas
 
 
 def test_recuperacao_recusa_privada_diferente_da_publica_configurada(par_de_teste):
