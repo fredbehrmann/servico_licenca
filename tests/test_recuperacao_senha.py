@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from app import admin_auth, recuperacao_contrato
+from app.painel import PAGINA_ADMIN
 from app.recuperacao_senha import digest_texto
 from tests.conftest import INSTALACAO_1
 
@@ -56,6 +57,14 @@ def _preparar(c, headers, solicitacao: str):
         "metodo_verificacao": "contato_oficial_cadastrado",
         "canal_oficial_confirmado": True,
     })
+
+
+def test_painel_mostra_modulo_mesmo_antes_da_configuracao():
+    assert '<div id="painel">' in PAGINA_ADMIN
+    assert '<button id="aba-recuperacao" class="ativa"' in PAGINA_ADMIN
+    assert '<section id="area-recuperacao">' in PAGINA_ADMIN
+    assert 'id="rec_disponibilidade"' in PAGINA_ADMIN
+    assert 'Módulo instalado, mas a emissão está desabilitada' in PAGINA_ADMIN
 
 
 def test_recuperacao_exige_sessao_corporativa(cliente):

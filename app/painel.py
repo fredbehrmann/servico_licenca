@@ -107,6 +107,7 @@ _TEMPLATE = """<!doctype html>
   .abas{display:flex;gap:8px;margin:0 0 16px;flex-wrap:wrap}
   .abas button{background:var(--surface);color:var(--navy);border:1px solid var(--border)}
   .abas button.ativa{background:var(--navy);color:#fff;border-color:var(--navy)}
+  .abas button:disabled{opacity:.5;cursor:not-allowed}
   .etapas{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0}
   .etapa{padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface2)}
   .etapa b{display:block;color:var(--navy);margin-bottom:4px}.etapa span{font-size:12px;color:var(--muted)}
@@ -144,12 +145,12 @@ _TEMPLATE = """<!doctype html>
     </div>
   </div>
 
-  <div id="painel" style="display:none">
+  <div id="painel">
     <div class="abas">
-      <button id="aba-licencas" class="ativa" onclick="abrirArea('licencas')">Licenças</button>
-      <button id="aba-recuperacao" onclick="abrirArea('recuperacao')">Recuperação de senha</button>
+      <button id="aba-licencas" disabled onclick="abrirArea('licencas')">Licenças</button>
+      <button id="aba-recuperacao" class="ativa" onclick="abrirArea('recuperacao')">Recuperação de senha</button>
     </div>
-    <section id="area-licencas">
+    <section id="area-licencas" style="display:none">
     <div class="resumo">
       <div class="stat"><div class="n" style="color:var(--navy)" id="r-total">0</div><div class="l">instalações</div></div>
       <div class="stat"><div class="n" style="color:var(--ok)" id="r-ativas">0</div><div class="l">ativas</div></div>
@@ -256,9 +257,12 @@ _TEMPLATE = """<!doctype html>
     </div>
     </section>
 
-    <section id="area-recuperacao" style="display:none">
+    <section id="area-recuperacao">
       <div class="cartao">
         <h2>Recuperação de senha administrativa</h2>
+        <div id="rec_disponibilidade" class="mensagem-fluxo" role="status">
+          Verificando a disponibilidade do módulo…
+        </div>
         <div class="etapas">
           <div class="etapa"><b>1. Validar</b><span>Confira a solicitação gerada pelo SICOF.</span></div>
           <div class="etapa"><b>2. Aprovar</b><span>Outro operador revisa o atendimento.</span></div>
@@ -266,8 +270,8 @@ _TEMPLATE = """<!doctype html>
         </div>
         <div class="mensagem-fluxo">O suporte nunca deve pedir a senha atual ou a nova senha do usuário.</div>
         <label>Solicitação gerada no SICOF</label>
-        <textarea id="rec_solicitacao" placeholder="Cole o texto iniciado por TFRQ1."></textarea>
-        <button id="rec_btn_validar" style="margin-top:10px" onclick="validarRecuperacao()">Validar solicitação</button>
+        <textarea id="rec_solicitacao" disabled placeholder="Cole o texto iniciado por TFRQ1."></textarea>
+        <button id="rec_btn_validar" disabled style="margin-top:10px" onclick="validarRecuperacao()">Validar solicitação</button>
         <div id="rec_mensagem" class="mensagem-fluxo" style="display:none" role="status"></div>
         <div id="rec_resumo" class="consulta-resumo"></div>
       </div>
@@ -298,10 +302,10 @@ _TEMPLATE = """<!doctype html>
       <div class="cartao">
         <h2>Aprovação e emissão</h2>
         <div id="rec_selecionada" class="mensagem-fluxo">Nenhuma solicitação preparada selecionada.</div>
-        <div class="checks"><label><input id="rec_confirmar_aprovacao" type="checkbox"> Revisei o protocolo, a identidade e o contexto da instalação.</label></div>
+        <div class="checks"><label><input id="rec_confirmar_aprovacao" type="checkbox" disabled> Revisei o protocolo, a identidade e o contexto da instalação.</label></div>
         <div class="linha" style="margin-top:10px">
           <div style="flex:0"><button id="rec_btn_aprovar" disabled onclick="aprovarRecuperacao()">Aprovar</button></div>
-          <div><input id="rec_confirmacao" placeholder="Para emitir, digite EMITIR" autocomplete="off"></div>
+          <div><input id="rec_confirmacao" disabled placeholder="Para emitir, digite EMITIR" autocomplete="off"></div>
           <div style="flex:0"><button id="rec_btn_emitir" disabled onclick="emitirRecuperacao()">Emitir token</button></div>
         </div>
         <div id="rec_token_box" style="display:none;margin-top:14px">
@@ -315,7 +319,7 @@ _TEMPLATE = """<!doctype html>
       </div>
 
       <div class="cartao">
-        <h2>Histórico saneado <span class="dir"><button class="sec peq" onclick="carregarRecuperacoes()">Atualizar</button></span></h2>
+        <h2>Histórico saneado <span class="dir"><button id="rec_btn_historico" class="sec peq" disabled onclick="carregarRecuperacoes()">Atualizar</button></span></h2>
         <div class="tabela-scroll"><table>
           <thead><tr><th>Atualização</th><th>Protocolo</th><th>Instalação</th><th>Estado</th><th>Responsáveis</th><th></th></tr></thead>
           <tbody id="tab-rec"><tr><td colspan="6" class="vazio">Entre com a conta corporativa para consultar.</td></tr></tbody>
@@ -390,20 +394,50 @@ async function sair(){
   sessionStorage.removeItem('admtok'); sessionStorage.removeItem('admoperador');
   limparTokenRecuperacao(); _csrf=''; _sessao={autenticado:false,papeis:[]};
   document.getElementById('token').value=''; document.getElementById('operador').value='';
-  document.getElementById('painel').style.display='none';
   document.getElementById('sessao-info').textContent='Sessão encerrada.';
+  await inicializarSessao();
 }
 
 function temPapel(papel){ return (_sessao.papeis||[]).includes(papel); }
 function podeRecuperacao(){ return temPapel('recuperacao_operador')||temPapel('recuperacao_aprovador')||temPapel('auditoria_leitura'); }
+function podeLicencas(){ return !!tok()||(_sessao.autenticado&&temPapel('licencas_operador')); }
+function recuperacaoDisponivel(){ return _sessao.autenticado&&_sessao.recuperacao_habilitada===true&&podeRecuperacao(); }
+function atualizarDisponibilidadeRecuperacao(){
+  const alvo=document.getElementById('rec_disponibilidade');
+  const operador=recuperacaoDisponivel()&&temPapel('recuperacao_operador');
+  const aprovador=recuperacaoDisponivel()&&temPapel('recuperacao_aprovador');
+  let texto=''; let ok=false;
+  if(_sessao.recuperacao_habilitada!==true){
+    texto='Módulo instalado, mas a emissão está desabilitada neste ambiente. Configure OIDC e a chave de recuperação antes de habilitá-la.';
+  }else if(_sessao.oidc_habilitado!==true){
+    texto='Módulo instalado, aguardando a configuração do acesso corporativo.';
+  }else if(!_sessao.autenticado){
+    texto='Entre com sua conta corporativa para validar ou acompanhar uma recuperação.';
+  }else if(!podeRecuperacao()){
+    texto='Sua conta está autenticada, mas não possui perfil de recuperação de senha.';
+  }else{
+    texto='Módulo habilitado. As ações disponíveis respeitam o perfil da sua conta.'; ok=true;
+  }
+  alvo.textContent=texto; alvo.className='mensagem-fluxo '+(ok?'ok':'');
+  document.getElementById('rec_solicitacao').disabled=!operador;
+  document.getElementById('rec_btn_validar').disabled=!operador;
+  document.getElementById('rec_preparo').disabled=true;
+  document.getElementById('rec_confirmar_aprovacao').disabled=!aprovador;
+  document.getElementById('rec_confirmacao').disabled=!aprovador;
+  document.getElementById('rec_btn_historico').disabled=!recuperacaoDisponivel();
+  if(!aprovador){
+    document.getElementById('rec_btn_aprovar').disabled=true;
+    document.getElementById('rec_btn_emitir').disabled=true;
+  }
+}
 function abrirArea(area){
   const rec=area==='recuperacao';
-  if(rec&&!podeRecuperacao()){ aviso('Sua conta não possui perfil de recuperação.',false); return; }
+  if(!rec&&!podeLicencas()){ aviso('Entre com uma conta autorizada ou informe a credencial legada para acessar as licenças.',false); return; }
   document.getElementById('area-licencas').style.display=rec?'none':'';
   document.getElementById('area-recuperacao').style.display=rec?'':'none';
   document.getElementById('aba-licencas').className=rec?'':'ativa';
   document.getElementById('aba-recuperacao').className=rec?'ativa':'';
-  if(rec)carregarRecuperacoes();
+  if(rec){ atualizarDisponibilidadeRecuperacao(); if(recuperacaoDisponivel())carregarRecuperacoes(); }
 }
 
 async function inicializarSessao(){
@@ -413,17 +447,18 @@ async function inicializarSessao(){
   }catch(e){ _sessao={autenticado:false,papeis:[]}; }
   const info=document.getElementById('sessao-info');
   const btn=document.getElementById('btn-oidc');
+  document.getElementById('painel').style.display='';
+  document.getElementById('aba-recuperacao').style.display='';
   if(_sessao.autenticado){
     info.textContent='Conectado como '+(_sessao.nome||'operador')+(_sessao.mfa?' · MFA confirmado':'');
-    btn.style.display='none'; document.getElementById('painel').style.display='';
-    document.getElementById('aba-recuperacao').style.display=podeRecuperacao()&&_sessao.recuperacao_habilitada!==false?'':'none';
-    document.getElementById('aba-licencas').style.display=temPapel('licencas_operador')?'':'none';
-    document.getElementById('rec_btn_validar').disabled=!temPapel('recuperacao_operador');
-    document.getElementById('rec_btn_preparar').disabled=!temPapel('recuperacao_operador');
+    btn.style.display='none';
+    document.getElementById('aba-licencas').disabled=!temPapel('licencas_operador');
+    atualizarDisponibilidadeRecuperacao();
     if(temPapel('licencas_operador'))carregar(); else if(podeRecuperacao())abrirArea('recuperacao');
   }else{
     btn.style.display=_sessao.oidc_habilitado===false?'none':'';
-    document.getElementById('aba-recuperacao').style.display='none';
+    document.getElementById('aba-licencas').disabled=!podeLicencas();
+    abrirArea('recuperacao');
   }
 }
 
@@ -439,6 +474,8 @@ async function carregar(){
       chamar('GET','/admin/contexto')
     ]);
     document.getElementById('painel').style.display='';
+    document.getElementById('aba-licencas').disabled=false;
+    abrirArea('licencas');
     document.getElementById('amb').textContent = contexto && contexto.ambiente ? ('ambiente: '+contexto.ambiente) : '';
     _instalacoes = inst.instalacoes || [];
     _licencas = lic.licencas || [];
@@ -740,7 +777,7 @@ async function validarRecuperacao(){
     resumoRecuperacao(r.solicitacao); document.getElementById('rec_preparo').disabled=false;
     mensagemRecuperacao('Solicitação válida. Confira o contexto antes de registrar o atendimento.',true);
   }catch(e){ document.getElementById('rec_preparo').disabled=true; }
-  finally{ botao.disabled=!temPapel('recuperacao_operador'); }
+  finally{ botao.disabled=!(recuperacaoDisponivel()&&temPapel('recuperacao_operador')); }
 }
 async function prepararRecuperacao(){
   const solicitacao=document.getElementById('rec_solicitacao').value.trim();
@@ -757,15 +794,15 @@ async function prepararRecuperacao(){
     mensagemRecuperacao('Atendimento preparado. Outro operador deve aprová-lo.',true);
     await carregarRecuperacoes();
   }catch(e){}
-  finally{ botao.disabled=!temPapel('recuperacao_operador'); }
+  finally{ botao.disabled=!(recuperacaoDisponivel()&&temPapel('recuperacao_operador')); }
 }
 function atualizarSelecionada(){
   const alvo=document.getElementById('rec_selecionada');
   if(!_recuperacaoAtual){ alvo.textContent='Nenhuma solicitação preparada selecionada.'; return; }
   alvo.textContent='Solicitação '+_recuperacaoAtual.request_id+' · estado: '+_recuperacaoAtual.estado+
     (_recuperacaoAtual.protocolo?' · protocolo: '+_recuperacaoAtual.protocolo:'');
-  const aprovar=_recuperacaoAtual.estado==='preparada'&&temPapel('recuperacao_aprovador');
-  const emitir=_recuperacaoAtual.estado==='aprovada'&&temPapel('recuperacao_aprovador');
+  const aprovar=_recuperacaoAtual.estado==='preparada'&&recuperacaoDisponivel()&&temPapel('recuperacao_aprovador');
+  const emitir=_recuperacaoAtual.estado==='aprovada'&&recuperacaoDisponivel()&&temPapel('recuperacao_aprovador');
   document.getElementById('rec_btn_aprovar').disabled=!aprovar;
   document.getElementById('rec_btn_emitir').disabled=!emitir;
 }
@@ -775,7 +812,7 @@ function selecionarRecuperacao(idCod){
   if(linha){ _recuperacaoAtual=linha; atualizarSelecionada(); limparTokenRecuperacao(); }
 }
 async function carregarRecuperacoes(){
-  if(!_sessao.autenticado||!podeRecuperacao())return;
+  if(!recuperacaoDisponivel())return;
   try{
     const r=await chamar('GET','/admin/recuperacoes?limite=100');
     window._recuperacoes=r.recuperacoes||[];
