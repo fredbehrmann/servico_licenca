@@ -160,9 +160,10 @@ def montar_estado() -> None:
     estado.recuperacao_token_ttl_s = _int_env("RECUPERACAO_TOKEN_TTL_SEGUNDOS", 900)
     estado.recuperacao_rate_max = _int_env("RECUPERACAO_RATE_MAX", 5)
     estado.recuperacao_rate_janela_s = _int_env("RECUPERACAO_RATE_JANELA_S", 3600)
-    estado.recuperacao_dupla_aprovacao = _bool_env(
-        "RECUPERACAO_DUPLA_APROVACAO", False,
-    )
+    # Modo temporário solicitado: a recuperação é autorizada somente pelo
+    # ADMIN_TOKEN compartilhado. Enquanto não houver identidade individual
+    # confiável, exigir "dois operadores" seria apenas uma distinção declarada.
+    estado.recuperacao_dupla_aprovacao = False
     estado.oidc = admin_auth.ConfiguracaoOidc(
         habilitado=_bool_env("OIDC_HABILITADO", False),
         issuer=os.environ.get("OIDC_ISSUER", "").strip(),

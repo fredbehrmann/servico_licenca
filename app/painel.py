@@ -373,7 +373,7 @@ async function chamar(metodo, url, corpo){
     body: corpo ? JSON.stringify(corpo) : undefined
   });
   let dados={}; try{ dados=await r.json(); }catch(e){}
-  if (r.status === 401){ aviso(_sessao.autenticado?'Sua sessão expirou. Entre novamente.':'Autenticação obrigatória.', false); throw new Error('401'); }
+  if (r.status === 401){ const detalhe=dados.detail||'ADMIN_TOKEN inválido ou ausente.'; aviso(detalhe, false); throw new Error(detalhe); }
   if (!r.ok){ const detalhe=dados.detail||('Falha HTTP '+r.status); aviso(detalhe, false); throw new Error(detalhe); }
   return dados;
 }
@@ -754,6 +754,11 @@ function mensagemRecuperacao(texto,ok){
   const alvo=document.getElementById('rec_mensagem'); alvo.textContent=texto;
   alvo.className='mensagem-fluxo '+(ok?'ok':'erro'); alvo.style.display='block';
 }
+function erroRecuperacao(erro,textoPadrao){
+  const texto=erro&&erro.message ? erro.message : textoPadrao;
+  mensagemRecuperacao(texto||'Não foi possível concluir a operação.',false);
+  document.getElementById('rec_mensagem').scrollIntoView({behavior:'smooth',block:'center'});
+}
 function dataEpoch(valor){
   const n=Number(valor); return n?new Date(n*1000).toLocaleString('pt-BR'):'—';
 }
@@ -772,10 +777,10 @@ async function validarRecuperacao(){
   const botao=document.getElementById('rec_btn_validar'); botao.disabled=true;
   try{
     const r=await chamar('POST','/admin/recuperacoes/validar',{solicitacao});
-    _recuperacaoAtual={request_id:r.solicitacao.request_id,estado:'validada'};
+    _recuperacaoAtual=Object.assign({},r.solicitacao,{estado:'validada'});
     resumoRecuperacao(r.solicitacao); document.getElementById('rec_preparo').disabled=false;
     mensagemRecuperacao('Solicitação válida. Confira o contexto antes de registrar o atendimento.',true);
-  }catch(e){ document.getElementById('rec_preparo').disabled=true; }
+  }catch(e){ document.getElementById('rec_preparo').disabled=true; erroRecuperacao(e,'Não foi possível validar a solicitação.'); }
   finally{ botao.disabled=!recuperacaoDisponivel(); }
 }
 async function prepararRecuperacao(){
@@ -786,13 +791,22 @@ async function prepararRecuperacao(){
     metodo_verificacao:document.getElementById('rec_metodo').value,
     canal_oficial_confirmado:document.getElementById('rec_canal').checked,
     escalonamento_confirmado:document.getElementById('rec_escalonamento').checked};
+  if(corpo.protocolo.length<3){ erroRecuperacao(null,'Informe um protocolo com pelo menos 3 caracteres.'); return; }
+  if(corpo.justificativa.length<20){ erroRecuperacao(null,'A justificativa deve ter pelo menos 20 caracteres.'); return; }
+  if(!corpo.metodo_verificacao){ erroRecuperacao(null,'Selecione o método de verificação da identidade.'); return; }
+  if(!corpo.canal_oficial_confirmado){ erroRecuperacao(null,'Confirme que o retorno será enviado pelo canal oficial.'); return; }
+  if(_recuperacaoAtual&&_recuperacaoAtual.instalacao_conhecida===false&&
+      (corpo.metodo_verificacao!=='outro_escalonado'||!corpo.escalonamento_confirmado)){
+    erroRecuperacao(null,'Instalação desconhecida exige o método Outro — escalonado e a confirmação da exceção.'); return;
+  }
   const botao=document.getElementById('rec_btn_preparar'); botao.disabled=true;
   try{
     const r=await chamar('POST','/admin/recuperacoes/preparar',corpo);
     _recuperacaoAtual=r.recuperacao; atualizarSelecionada();
     mensagemRecuperacao('Atendimento preparado. Revise os dados antes de aprovar.',true);
     await carregarRecuperacoes();
-  }catch(e){}
+    document.getElementById('rec_selecionada').scrollIntoView({behavior:'smooth',block:'center'});
+  }catch(e){ erroRecuperacao(e,'Não foi possível preparar o atendimento.'); }
   finally{ botao.disabled=!recuperacaoDisponivel(); }
 }
 function atualizarSelecionada(){
@@ -837,7 +851,7 @@ async function aprovarRecuperacao(){
     _recuperacaoAtual=r.recuperacao; atualizarSelecionada();
     mensagemRecuperacao('Solicitação aprovada. Apresente novamente o TFRQ1 e digite EMITIR.',true);
     await carregarRecuperacoes();
-  }catch(e){ atualizarSelecionada(); }
+  }catch(e){ atualizarSelecionada(); erroRecuperacao(e,'Não foi possível aprovar o atendimento.'); }
 }
 async function emitirRecuperacao(){
   if(!_recuperacaoAtual)return;
@@ -853,7 +867,7 @@ async function emitirRecuperacao(){
     _recuperacaoAtual.estado='emitida'; atualizarSelecionada(); iniciarContagemToken(r.expira_em);
     mensagemRecuperacao('Token emitido. Copie-o agora e envie somente pelo canal oficial.',true);
     document.getElementById('rec_confirmacao').value=''; await carregarRecuperacoes();
-  }catch(e){ atualizarSelecionada(); }
+  }catch(e){ atualizarSelecionada(); erroRecuperacao(e,'Não foi possível emitir o token.'); }
 }
 function iniciarContagemToken(expiraEm){
   if(_intervaloToken)clearInterval(_intervaloToken);

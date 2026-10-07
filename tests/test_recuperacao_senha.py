@@ -73,6 +73,8 @@ def test_painel_mostra_modulo_mesmo_antes_da_configuracao():
     assert 'id="rec_disponibilidade"' in PAGINA_ADMIN
     assert 'Módulo instalado, mas a emissão está desabilitada' in PAGINA_ADMIN
     assert 'mesma credencial administrativa autoriza licenças e recuperação' in PAGINA_ADMIN
+    assert "erroRecuperacao(e,'Não foi possível preparar o atendimento.')" in PAGINA_ADMIN
+    assert "rec_selecionada').scrollIntoView" in PAGINA_ADMIN
 
 
 def test_recuperacao_exige_admin_token(cliente):
@@ -91,6 +93,7 @@ def test_recuperacao_exige_admin_token(cliente):
 def test_fluxo_com_admin_token_emite_token_uma_vez(cliente):
     c, _, main = cliente
     main.estado.repo.autorizar(INSTALACAO_1, "2927408", None)
+    assert main.estado.recuperacao_dupla_aprovacao is False
     solicitacao = _solicitacao()
 
     headers_operador = _headers_token("operador-1")

@@ -58,7 +58,9 @@ def cliente(monkeypatch, par_de_teste):
         "RECUPERACAO_PUBLICA_B64_ESPERADA",
         base64.b64encode(recuperacao_publica).decode("ascii"),
     )
-    monkeypatch.setenv("RECUPERACAO_DUPLA_APROVACAO", "false")
+    # O modo temporário com ADMIN_TOKEN ignora uma variável antiga ainda
+    # presente no ambiente e permanece sem falsa dupla aprovação.
+    monkeypatch.setenv("RECUPERACAO_DUPLA_APROVACAO", "true")
     monkeypatch.setenv("OIDC_HABILITADO", "true")
     monkeypatch.setenv("OIDC_ISSUER", "https://login.exemplo.test/tenant/v2.0")
     monkeypatch.setenv("OIDC_AUTHORIZATION_ENDPOINT", "https://login.exemplo.test/authorize")
