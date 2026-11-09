@@ -12,7 +12,9 @@ Configuração por variáveis de ambiente (ver README):
   LICENCA_PRIVADA_PEM, LICENCA_KEY_ID, LICENCA_AMBIENTE, LICENCA_VERSAO_MINIMA,
   LICENCA_DIAS_VALIDADE, LICENCA_DIAS_OFFLINE, ADMIN_TOKEN, DATABASE_URL,
   LICENCA_RATE_MAX, LICENCA_RATE_JANELA_S, LICENCA_REPLICAS,
-  LICENCA_RETENCAO_TENTATIVAS_DIAS, LICENCA_RETENCAO_AUDITORIA_DIAS.
+  LICENCA_RETENCAO_TENTATIVAS_DIAS, LICENCA_RETENCAO_AUDITORIA_DIAS,
+  LICENCA_TRIAL_ATIVO, LICENCA_VERSAO_TRIAL_MINIMA, LICENCA_TRIAL_DIAS,
+  LICENCA_TRIAL_DIAS_OFFLINE.
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
-from app import admin_auth, contrato, licencas, recuperacao_senha, validacao
+from app import admin_auth, contrato, licencas, municipios, recuperacao_senha, validacao
 from app.painel import PAGINA_ADMIN
 from app.assinador import Assinador, assinador_do_ambiente
 from app.assinador_recuperacao import (
@@ -51,7 +53,7 @@ from app.repositorio import (
     RepositorioMemoria,
     repositorio_do_ambiente,
 )
-from app.servico import Config, decidir
+from app.servico import Config, decidir, suporta_plano
 
 _log = logging.getLogger("licenca.servico")
 
@@ -118,6 +120,12 @@ def montar_estado() -> None:
     versao_minima = os.environ.get("LICENCA_VERSAO_MINIMA", "").strip() or "1.0.0"
     dias_validade = _int_env("LICENCA_DIAS_VALIDADE", 365)
     dias_offline = _int_env("LICENCA_DIAS_OFFLINE", 7)
+    trial_ativo = _bool_env("LICENCA_TRIAL_ATIVO", False)
+    versao_trial_minima = os.environ.get(
+        "LICENCA_VERSAO_TRIAL_MINIMA", ""
+    ).strip() or "1.1.0"
+    trial_dias = _int_env("LICENCA_TRIAL_DIAS", 30)
+    trial_dias_offline = _int_env("LICENCA_TRIAL_DIAS_OFFLINE", 2)
     rate_max = _int_env("LICENCA_RATE_MAX", 12)
     rate_janela_s = _int_env("LICENCA_RATE_JANELA_S", 3600)
     replicas_bruto = os.environ.get("LICENCA_REPLICAS", "").strip()
@@ -133,6 +141,10 @@ def montar_estado() -> None:
         versao_minima=versao_minima,
         dias_validade=dias_validade,
         dias_offline=dias_offline,
+        trial_ativo=trial_ativo,
+        versao_trial_minima=versao_trial_minima,
+        trial_dias=trial_dias,
+        trial_dias_offline=trial_dias_offline,
     )
     try:
         estado.repo = repositorio_do_ambiente(database_url)
@@ -212,6 +224,10 @@ def montar_estado() -> None:
         recuperacao_rate_janela_s=estado.recuperacao_rate_janela_s,
         recuperacao_dupla_aprovacao=estado.recuperacao_dupla_aprovacao,
         oidc_configurado=estado.oidc.configurado,
+        trial_ativo=trial_ativo,
+        versao_trial_minima=versao_trial_minima,
+        trial_dias=trial_dias,
+        trial_dias_offline=trial_dias_offline,
     )
     diagnostico = _atualizar_prontidao()
     if not diagnostico.pronto:
@@ -448,6 +464,22 @@ async def consulta(request: Request) -> JSONResponse:
         raise HTTPException(status_code=503, detail="serviço sem chave de assinatura")
 
     agora = datetime.now(timezone.utc)
+    # Somente uma instalação desconhecida pode iniciar um trial. O repositório
+    # repete essa conferência dentro da mesma transação que cria o vínculo, para
+    # impedir que concorrência altere uma instalação já em funcionamento.
+    if (estado.cfg.trial_ativo
+            and estado.repo.obter_instalacao(req["instalacao_id"]) is None
+            and suporta_plano(req["versao_app"], estado.cfg.versao_trial_minima)):
+        try:
+            estado.repo.emitir_trial_se_elegivel(
+                req["instalacao_id"], req["codigo_ibge"], agora,
+                estado.cfg.trial_dias, estado.cfg.trial_dias_offline,
+                estado.cfg.versao_trial_minima,
+            )
+        except Exception:
+            # Falha fechada: a consulta continuará e responderá não autorizada;
+            # nunca cai para uma autorização parcial.
+            _log.exception("falha ao tentar emitir licença trial")
     resposta = decidir(req, estado.repo, estado.cfg, agora)
     resposta["assinatura"] = estado.assinador.assinar(resposta)
 
@@ -649,6 +681,32 @@ async def listar() -> dict[str, Any]:
     return {"ok": True, "instalacoes": estado.repo.listar_instalacoes()}
 
 
+@app.get("/admin/suporte/instalacoes", dependencies=[Depends(exigir_admin)])
+async def suporte_instalacoes(termo: str = "") -> dict[str, Any]:
+    filtro = str(termo or "").strip().lower()
+    licencas_por_id = {
+        str(item["licenca_id"]): item for item in estado.repo.listar_licencas()
+    }
+    resultado = []
+    for instalacao in estado.repo.listar_instalacoes():
+        licenca_id = str(instalacao.get("licenca_id") or "")
+        licenca = licencas_por_id.get(licenca_id) or {}
+        registro = {
+            **instalacao,
+            "nome_municipio": licenca.get("nome_municipio") or "",
+            "plano": licenca.get("plano") or ("contratado" if licenca_id else "legado"),
+            "status_licenca": licenca.get("status"),
+            "expira_em": licenca.get("expira_em"),
+        }
+        palheiro = " ".join(str(registro.get(campo) or "").lower() for campo in (
+            "instalacao_id", "codigo_ibge", "licenca_id", "nome_municipio",
+            "plano", "status_instalacao", "status_licenca",
+        ))
+        if not filtro or filtro in palheiro:
+            resultado.append(registro)
+    return {"ok": True, "instalacoes": resultado[:100]}
+
+
 @app.get("/admin/municipios-revogados", dependencies=[Depends(exigir_admin)])
 async def listar_municipios_revogados() -> dict[str, Any]:
     return {"ok": True, "codigos": estado.repo.listar_municipios_revogados()}
@@ -682,6 +740,8 @@ async def contexto_admin() -> dict[str, Any]:
         "ok": True,
         "ambiente": estado.cfg.ambiente,
         "recuperacao_habilitada": estado.recuperacao_habilitada,
+        "trial_ativo": estado.cfg.trial_ativo,
+        "versao_trial_minima": estado.cfg.versao_trial_minima,
     }
 
 
@@ -988,6 +1048,46 @@ async def obter_recuperacao_admin(
     }
 
 
+@app.get("/admin/municipios/busca", dependencies=[Depends(exigir_admin)])
+async def buscar_municipios(termo: str = "", limite: int = 20) -> dict[str, Any]:
+    if not 1 <= limite <= 100:
+        raise HTTPException(status_code=400, detail="limite deve estar entre 1 e 100")
+    return {"ok": True, "municipios": municipios.buscar(termo, limite)}
+
+
+@app.get("/admin/municipios-trial", dependencies=[Depends(exigir_admin)])
+async def listar_municipios_trial() -> dict[str, Any]:
+    return {"ok": True, "municipios": estado.repo.listar_municipios_trial()}
+
+
+@app.post("/admin/municipios-trial", dependencies=[Depends(exigir_admin)])
+async def configurar_municipio_trial(request: Request) -> dict[str, Any]:
+    corpo = await _ler_objeto_json(request, limite=validacao.MAX_CORPO_ADMIN)
+    _entrada_admin(
+        validacao.validar_campos, corpo,
+        {"codigo_ibge", "ativo", "max_instalacoes_trial"},
+        obrigatorios={"codigo_ibge"},
+    )
+    codigo = _entrada_admin(validacao.codigo_ibge, corpo.get("codigo_ibge"))
+    oficial = municipios.obter(codigo)
+    if oficial is None:
+        raise HTTPException(status_code=400, detail="município não consta no catálogo IBGE")
+    ativo = corpo.get("ativo", True)
+    if not isinstance(ativo, bool):
+        raise HTTPException(status_code=400, detail="ativo deve ser verdadeiro ou falso")
+    maximo = _entrada_admin(
+        validacao.inteiro, corpo.get("max_instalacoes_trial", 1),
+        "max_instalacoes_trial", maximo=validacao.MAX_INSTALACOES_ATIVAS,
+    )
+    registro = estado.repo.configurar_municipio_trial({
+        "codigo_ibge": codigo,
+        "nome_municipio": oficial["nome"],
+        "uf": oficial["uf"],
+        "ativo": ativo,
+        "max_instalacoes_trial": maximo,
+        "atualizado_em": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"ok": True, "municipio": registro}
 # ─── Administração contratual (Etapa 3) ────────────────────────────────────
 
 
@@ -1019,6 +1119,32 @@ async def criar_licenca(request: Request) -> dict[str, Any]:
 @app.get("/admin/licencas", dependencies=[Depends(exigir_admin)])
 async def listar_licencas() -> dict[str, Any]:
     return {"ok": True, "licencas": estado.repo.listar_licencas()}
+
+
+@app.post("/admin/licencas/{licenca_id}/converter-contrato", dependencies=[Depends(exigir_admin)])
+async def converter_trial(licenca_id: str, request: Request) -> dict[str, Any]:
+    licenca_id = _entrada_admin(validacao.uuid_canonico, licenca_id, "licenca_id")
+    existente = estado.repo.obter_licenca(licenca_id)
+    if existente is None:
+        raise HTTPException(status_code=404, detail="licença não encontrada")
+    try:
+        corpo = await _ler_objeto_json(request, limite=validacao.MAX_CORPO_ADMIN)
+        agora = datetime.now(timezone.utc)
+        dados = licencas.normalizar_conversao_trial(existente, corpo, agora)
+        convertida = estado.repo.converter_trial(licenca_id, dados)
+        if convertida is None:
+            raise HTTPException(status_code=404, detail="licença não encontrada")
+        estado.repo.registrar_evento_licenca(
+            licenca_id, "trial_convertido_em_contrato",
+            json.dumps({
+                "expira_em": convertida.get("expira_em"),
+                "max_auditores": convertida.get("max_auditores"),
+            }, ensure_ascii=False, sort_keys=True),
+            agora,
+        )
+        return {"ok": True, "licenca": convertida}
+    except (licencas.LicencaInvalida, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.patch("/admin/licencas/{licenca_id}", dependencies=[Depends(exigir_admin)])
@@ -1063,6 +1189,15 @@ async def associar_instalacao(licenca_id: str, request: Request) -> dict[str, An
         corpo = await _ler_objeto_json(request, limite=validacao.MAX_CORPO_ADMIN)
         vinculo = licencas.normalizar_instalacao(corpo)
         anterior = estado.repo.obter_instalacao(vinculo["instalacao_id"])
+        destino = estado.repo.obter_licenca(licenca_id)
+        if destino is None:
+            raise HTTPException(status_code=404, detail="licença não encontrada")
+        if (destino.get("plano") == "trial"
+                and str((anterior or {}).get("licenca_id") or "") != licenca_id):
+            raise HTTPException(
+                status_code=409,
+                detail="instalações trial são associadas somente pela primeira consulta elegível",
+            )
         licenca_anterior_id = str((anterior or {}).get("licenca_id") or "")
         transferencia = bool(licenca_anterior_id and licenca_anterior_id != licenca_id)
         if transferencia and not vinculo["confirmar_transferencia"]:

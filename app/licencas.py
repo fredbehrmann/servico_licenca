@@ -3,7 +3,8 @@
 
 O contrato comercial e a instalação são conceitos diferentes. Este módulo
 normaliza os dados administrativos sem conhecer HTTP nem banco. A resposta
-assinada ao SICOF continua no contrato v1; estados internos mais detalhados são
+assinada ao SICOF usa o contrato v2 aditivo; clientes v1 continuam recebendo a
+forma antiga sem o campo ``plano``. Estados internos mais detalhados são
 traduzidos por :mod:`app.servico`.
 """
 
@@ -28,6 +29,7 @@ from app.validacao import (
 
 STATUS_LICENCA = frozenset({"ativa", "suspensa", "revogada", "expirada", "pendente"})
 STATUS_INSTALACAO = frozenset({"ativa", "contingencia", "revogada", "substituida"})
+PLANOS = frozenset({"contratado", "trial"})
 CAMPOS_CRIACAO = frozenset({
     "licenca_id", "codigo_ibge", "nome_municipio", "status", "inicio_em", "expira_em",
     "max_auditores", "max_instalacoes_ativas", "dias_offline", "versao_minima",
@@ -134,6 +136,7 @@ def normalizar_criacao(corpo: dict[str, Any], agora: Optional[datetime] = None) 
         "versao_minima": _versao_minima(corpo.get("versao_minima", "1.0.0")),
         "criada_em": iso(agora),
         "atualizada_em": iso(agora),
+        "plano": "contratado",
     }
 
 
@@ -152,6 +155,23 @@ def normalizar_atualizacao(
         raise LicencaInvalida(str(exc)) from exc
     if not corpo:
         raise LicencaInvalida("informe ao menos um campo para atualizar")
+    if str(existente.get("plano") or "contratado") == "trial":
+        nao_permitidos = set(corpo) - {"status", "nome_municipio"}
+        if nao_permitidos:
+            raise LicencaInvalida(
+                "vigência e limites do trial são fixos; use a conversão para contrato"
+            )
+        atualizado = dict(existente)
+        if "status" in corpo:
+            status_bruto = corpo["status"]
+            if not isinstance(status_bruto, str) or status_bruto.strip().lower() not in STATUS_LICENCA:
+                raise LicencaInvalida(f"status deve ser um de {sorted(STATUS_LICENCA)}")
+            atualizado["status"] = status_bruto.strip().lower()
+        if "nome_municipio" in corpo:
+            atualizado["nome_municipio"] = _nome_municipio(corpo["nome_municipio"])
+        atualizado["atualizada_em"] = iso((agora or agora_utc()).astimezone(timezone.utc))
+        atualizado["plano"] = "trial"
+        return atualizado
     if "expira_em" in corpo:
         novo_fim = parse_data(corpo["expira_em"], "expira_em")
         if existente.get("expira_em"):
@@ -173,6 +193,34 @@ def normalizar_atualizacao(
         "codigo_ibge": existente["codigo_ibge"],
     }, agora=agora)
     validado["criada_em"] = str(existente.get("criada_em") or validado["criada_em"])
+    validado["plano"] = str(existente.get("plano") or "contratado")
+    return validado
+
+
+def normalizar_conversao_trial(
+    existente: dict[str, Any], corpo: dict[str, Any], agora: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """Valida os termos comerciais que substituem o trial na mesma licença."""
+    if str(existente.get("plano") or "contratado") != "trial":
+        raise LicencaInvalida("a licença informada não é trial")
+    try:
+        validar_campos(
+            corpo,
+            {"status", "inicio_em", "expira_em", "max_auditores",
+             "max_instalacoes_ativas", "dias_offline", "versao_minima"},
+            obrigatorios={"inicio_em", "expira_em", "max_auditores"},
+        )
+    except EntradaInvalida as exc:
+        raise LicencaInvalida(str(exc)) from exc
+    validado = normalizar_criacao({
+        **corpo,
+        "licenca_id": existente["licenca_id"],
+        "codigo_ibge": existente["codigo_ibge"],
+        "nome_municipio": existente.get("nome_municipio") or "",
+        "status": corpo.get("status", "ativa"),
+    }, agora=agora)
+    validado["criada_em"] = str(existente.get("criada_em") or validado["criada_em"])
+    validado["plano"] = "contratado"
     return validado
 
 

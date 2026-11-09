@@ -156,6 +156,20 @@ MIGRACOES = (
         "CREATE INDEX IF NOT EXISTS ix_recuperacoes_senha_estado_atualizada "
         "ON recuperacoes_senha(estado, atualizado_em DESC)",
     )),
+    MigracaoSchema(7, "plano_trial_municipal", (
+        "ALTER TABLE licencas ADD COLUMN IF NOT EXISTS plano TEXT NOT NULL DEFAULT 'contratado'",
+        """CREATE TABLE IF NOT EXISTS municipios_trial (
+               codigo_ibge              TEXT PRIMARY KEY,
+               nome_municipio           TEXT NOT NULL,
+               uf                       TEXT NOT NULL,
+               ativo                    BOOLEAN NOT NULL DEFAULT TRUE,
+               max_instalacoes_trial    INTEGER NOT NULL DEFAULT 1,
+               criado_em                TIMESTAMPTZ NOT NULL DEFAULT now(),
+               atualizado_em            TIMESTAMPTZ NOT NULL DEFAULT now()
+           )""",
+        "CREATE INDEX IF NOT EXISTS ix_licencas_plano_status ON licencas(plano, status)",
+        "CREATE INDEX IF NOT EXISTS ix_municipios_trial_ativo ON municipios_trial(ativo)",
+    )),
 )
 
 

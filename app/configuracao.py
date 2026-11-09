@@ -54,6 +54,10 @@ class ConfiguracaoOperacional:
     recuperacao_rate_janela_s: int = 3600
     recuperacao_dupla_aprovacao: bool = False
     oidc_configurado: bool = False
+    trial_ativo: bool = False
+    versao_trial_minima: str = "1.1.0"
+    trial_dias: int = 30
+    trial_dias_offline: int = 2
 
 
 @dataclass(frozen=True)
@@ -106,6 +110,13 @@ def diagnosticar(
         problemas.append("limite_requisicoes_invalido")
     if cfg.retencao_tentativas_dias < 1 or cfg.retencao_auditoria_dias < 1:
         problemas.append("retencao_invalida")
+    if cfg.trial_ativo:
+        if not _VERSAO.fullmatch(cfg.versao_trial_minima):
+            problemas.append("versao_trial_minima_invalida")
+        if not 1 <= cfg.trial_dias <= 365:
+            problemas.append("validade_trial_invalida")
+        if not 1 <= cfg.trial_dias_offline <= min(30, cfg.trial_dias):
+            problemas.append("tolerancia_offline_trial_invalida")
 
     if cfg.recuperacao_habilitada:
         if not cfg.recuperacao_key_id:

@@ -18,8 +18,9 @@ import copy
 import hmac
 import json
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Protocol
+from uuid import uuid4
 
 
 class RecuperacaoDuplicada(ValueError):
@@ -63,6 +64,13 @@ class Repositorio(Protocol):
                                  detalhes: str, quando: datetime) -> None: ...
     def listar_eventos_licenca(self, licenca_id: str,
                                limite: int = 100) -> list[dict[str, Any]]: ...
+    def configurar_municipio_trial(self, dados: dict[str, Any]) -> dict[str, Any]: ...
+    def listar_municipios_trial(self) -> list[dict[str, Any]]: ...
+    def emitir_trial_se_elegivel(self, instalacao_id: str, codigo_ibge: str,
+                                 agora: datetime, dias: int, dias_offline: int,
+                                 versao_minima: str) -> Optional[dict[str, Any]]: ...
+    def converter_trial(self, licenca_id: str,
+                        dados: dict[str, Any]) -> Optional[dict[str, Any]]: ...
     def registrar_auditoria_admin(self, operador: str, acao: str, alvo: str,
                                   resultado: str, detalhes: str,
                                   quando: datetime) -> None: ...
@@ -102,6 +110,7 @@ class RepositorioMemoria:
         self._recuperacoes: dict[str, dict[str, Any]] = {}
         self._migracoes_dados: dict[str, dict[str, Any]] = {}
         self._munic_revogados: set[str] = set()
+        self._municipios_trial: dict[str, dict[str, Any]] = {}
         self.tentativas: list[dict[str, Any]] = []
         self._lock = threading.RLock()
 
@@ -124,6 +133,7 @@ class RepositorioMemoria:
                 "revogada": False,
                 "licenca_id": None,
                 "status_instalacao": None,
+                "criada_em": atual.get("criada_em") or datetime.now(timezone.utc).isoformat(),
             }
 
     def revogar_instalacao(self, instalacao_id) -> bool:
@@ -177,7 +187,7 @@ class RepositorioMemoria:
                 raise ValueError(
                     "o município já possui uma licença em aberto; renove ou altere a existente"
                 )
-            self._licencas[licenca_id] = dict(dados)
+            self._licencas[licenca_id] = {"plano": "contratado", **dict(dados)}
             return dict(self._licencas[licenca_id])
 
     def obter_licenca(self, licenca_id: str) -> Optional[dict[str, Any]]:
@@ -229,6 +239,7 @@ class RepositorioMemoria:
                 "ativada_em": quando.isoformat() if status == "ativa" else None,
                 "revogada_em": quando.isoformat() if status in {"revogada", "substituida"} else None,
                 "ultima_consulta_em": (atual or {}).get("ultima_consulta_em"),
+                "criada_em": (atual or {}).get("criada_em") or quando.isoformat(),
             }
             self._inst[instalacao_id] = reg
             return dict(reg)
@@ -250,6 +261,107 @@ class RepositorioMemoria:
                                limite: int = 100) -> list[dict[str, Any]]:
         eventos = [e for e in reversed(self._eventos) if e["licenca_id"] == licenca_id]
         return [dict(e) for e in eventos[: max(1, int(limite))]]
+
+    def configurar_municipio_trial(self, dados: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            codigo = str(dados["codigo_ibge"])
+            agora = str(dados["atualizado_em"])
+            anterior = self._municipios_trial.get(codigo) or {}
+            registro = {
+                "codigo_ibge": codigo,
+                "nome_municipio": str(dados["nome_municipio"]),
+                "uf": str(dados["uf"]),
+                "ativo": bool(dados["ativo"]),
+                "max_instalacoes_trial": int(dados["max_instalacoes_trial"]),
+                "criado_em": anterior.get("criado_em") or agora,
+                "atualizado_em": agora,
+            }
+            self._municipios_trial[codigo] = registro
+            return dict(registro)
+
+    def listar_municipios_trial(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                dict(registro) for _, registro in sorted(
+                    self._municipios_trial.items(),
+                    key=lambda item: (item[1]["nome_municipio"], item[0]),
+                )
+            ]
+
+    def emitir_trial_se_elegivel(self, instalacao_id: str, codigo_ibge: str,
+                                 agora: datetime, dias: int, dias_offline: int,
+                                 versao_minima: str) -> Optional[dict[str, Any]]:
+        """Cria/associa um trial sob um único lock; instalações conhecidas não mudam."""
+        with self._lock:
+            if instalacao_id in self._inst:
+                return None
+            municipio = self._municipios_trial.get(codigo_ibge)
+            if not municipio or not municipio.get("ativo"):
+                return None
+            abertas = [
+                reg for reg in self._licencas.values()
+                if reg.get("codigo_ibge") == codigo_ibge
+                and reg.get("status") in {"ativa", "suspensa", "pendente"}
+            ]
+            if abertas:
+                licenca = abertas[0]
+                if licenca.get("plano") != "trial" or licenca.get("status") != "ativa":
+                    return None
+                fim = datetime.fromisoformat(str(licenca["expira_em"]))
+                if fim.tzinfo is None:
+                    fim = fim.replace(tzinfo=timezone.utc)
+                if agora >= fim:
+                    return None
+            else:
+                licenca_id = str(uuid4())
+                fim = agora + timedelta(days=dias)
+                licenca = {
+                    "licenca_id": licenca_id,
+                    "codigo_ibge": codigo_ibge,
+                    "nome_municipio": municipio["nome_municipio"],
+                    "status": "ativa",
+                    "inicio_em": agora.isoformat(),
+                    "expira_em": fim.isoformat(),
+                    "max_auditores": None,
+                    "max_instalacoes_ativas": int(municipio["max_instalacoes_trial"]),
+                    "dias_offline": dias_offline,
+                    "versao_minima": versao_minima,
+                    "criada_em": agora.isoformat(),
+                    "atualizada_em": agora.isoformat(),
+                    "plano": "trial",
+                }
+                self._licencas[licenca_id] = licenca
+            if self.contar_instalacoes_ativas(str(licenca["licenca_id"])) >= int(
+                licenca["max_instalacoes_ativas"]
+            ):
+                return None
+            instalacao = self.associar_instalacao(
+                instalacao_id, str(licenca["licenca_id"]), "ativa", agora,
+            )
+            self._eventos.append({
+                "licenca_id": licenca["licenca_id"],
+                "acao": "trial_emitido",
+                "detalhes": json.dumps({"instalacao_id": instalacao_id}, sort_keys=True),
+                "quando": agora.isoformat(),
+            })
+            return {"licenca": dict(licenca), "instalacao": instalacao}
+
+    def converter_trial(self, licenca_id: str,
+                        dados: dict[str, Any]) -> Optional[dict[str, Any]]:
+        with self._lock:
+            atual = self._licencas.get(licenca_id)
+            if atual is None:
+                return None
+            if atual.get("plano") != "trial":
+                raise ValueError("a licença informada não é trial")
+            if int(dados["max_instalacoes_ativas"]) < self.contar_instalacoes_ativas(licenca_id):
+                raise ValueError("o limite não pode ser menor que as instalações ativas")
+            atual.update({**dados, "plano": "contratado"})
+            municipio = self._municipios_trial.get(str(atual.get("codigo_ibge") or ""))
+            if municipio:
+                municipio["ativo"] = False
+                municipio["atualizado_em"] = str(dados["atualizada_em"])
+            return dict(atual)
 
     def registrar_auditoria_admin(self, operador: str, acao: str, alvo: str,
                                   resultado: str, detalhes: str,
@@ -502,7 +614,7 @@ class RepositorioMemoria:
         for licenca_id, licenca in self._licencas.items():
             if licenca.get("status") == "ativa" and (
                 not licenca.get("expira_em") or not licenca.get("inicio_em")
-                or not licenca.get("max_auditores")
+                or (not licenca.get("max_auditores") and licenca.get("plano") != "trial")
             ):
                 raise ValueError(f"licença ativa incompleta: {licenca_id}")
             if self.contar_instalacoes_ativas(licenca_id) > int(
@@ -551,7 +663,7 @@ class RepositorioPostgres:
             row = con.execute(
                 text("SELECT instalacao_id, codigo_ibge, max_usuarios, revogada, "
                      "licenca_id, status_instalacao, associada_em, ativada_em, "
-                     "revogada_em, ultima_consulta_em "
+                     "revogada_em, ultima_consulta_em, criada_em "
                      "FROM instalacoes WHERE instalacao_id = :i"),
                 {"i": instalacao_id},
             ).mappings().first()
@@ -620,7 +732,7 @@ class RepositorioPostgres:
             rows = con.execute(
                 text("SELECT instalacao_id, codigo_ibge, max_usuarios, revogada, "
                      "licenca_id, status_instalacao, associada_em, ativada_em, "
-                     "revogada_em, ultima_consulta_em "
+                     "revogada_em, ultima_consulta_em, criada_em "
                      "FROM instalacoes ORDER BY criada_em")
             ).mappings().all()
         return [dict(r) for r in rows]
@@ -682,12 +794,16 @@ class RepositorioPostgres:
             con.execute(text("""INSERT INTO licencas (
                 licenca_id, codigo_ibge, nome_municipio, status, inicio_em, expira_em,
                 max_auditores, max_instalacoes_ativas, dias_offline,
-                versao_minima, criada_em, atualizada_em
+                versao_minima, criada_em, atualizada_em, plano
             ) VALUES (
                 :licenca_id, :codigo_ibge, :nome_municipio, :status, :inicio_em, :expira_em,
                 :max_auditores, :max_instalacoes_ativas, :dias_offline,
-                :versao_minima, :criada_em, :atualizada_em
-            )"""), {**dados, "nome_municipio": str(dados.get("nome_municipio") or "")})
+                :versao_minima, :criada_em, :atualizada_em, :plano
+            )"""), {
+                **dados,
+                "nome_municipio": str(dados.get("nome_municipio") or ""),
+                "plano": str(dados.get("plano") or "contratado"),
+            })
         return self.obter_licenca(str(dados["licenca_id"])) or dict(dados)
 
     def obter_licenca(self, licenca_id: str) -> Optional[dict[str, Any]]:
@@ -696,7 +812,7 @@ class RepositorioPostgres:
             row = con.execute(text(
                 "SELECT licenca_id, codigo_ibge, nome_municipio, status, inicio_em, expira_em, "
                 "max_auditores, max_instalacoes_ativas, dias_offline, versao_minima, "
-                "criada_em, atualizada_em, chave_migracao, migrada_em "
+                "criada_em, atualizada_em, chave_migracao, migrada_em, plano "
                 "FROM licencas WHERE licenca_id = :l"
             ), {"l": licenca_id}).mappings().first()
         return self._datas_iso(dict(row)) if row else None
@@ -707,7 +823,7 @@ class RepositorioPostgres:
             rows = con.execute(text("""SELECT l.licenca_id, l.codigo_ibge, l.nome_municipio, l.status,
                 l.inicio_em, l.expira_em, l.max_auditores, l.max_instalacoes_ativas,
                 l.dias_offline, l.versao_minima, l.criada_em, l.atualizada_em,
-                l.chave_migracao, l.migrada_em,
+                l.chave_migracao, l.migrada_em, l.plano,
                 COUNT(i.instalacao_id) FILTER (WHERE i.status_instalacao = 'ativa') AS instalacoes_ativas
                 FROM licencas l LEFT JOIN instalacoes i ON i.licenca_id = l.licenca_id
                 GROUP BY l.licenca_id ORDER BY l.criada_em""")).mappings().all()
@@ -875,7 +991,7 @@ class RepositorioPostgres:
                 max_auditores=:max_auditores,
                 max_instalacoes_ativas=:max_instalacoes_ativas,
                 dias_offline=:dias_offline, versao_minima=:versao_minima,
-                atualizada_em=:atualizada_em
+                atualizada_em=:atualizada_em, plano=:plano
                 WHERE licenca_id=:licenca_id"""), {**dados, "licenca_id": licenca_id})
         return self.obter_licenca(licenca_id) if (res.rowcount or 0) else None
 
@@ -941,6 +1057,124 @@ class RepositorioPostgres:
                 "WHERE licenca_id=:l ORDER BY quando DESC LIMIT :n"
             ), {"l": licenca_id, "n": max(1, int(limite))}).mappings().all()
         return [self._datas_iso(dict(r)) for r in rows]
+
+    def configurar_municipio_trial(self, dados: dict[str, Any]) -> dict[str, Any]:
+        from sqlalchemy import text
+        with self._engine.begin() as con:
+            row = con.execute(text("""INSERT INTO municipios_trial (
+                codigo_ibge, nome_municipio, uf, ativo, max_instalacoes_trial,
+                criado_em, atualizado_em
+            ) VALUES (:codigo_ibge, :nome_municipio, :uf, :ativo,
+                      :max_instalacoes_trial, :atualizado_em, :atualizado_em)
+            ON CONFLICT (codigo_ibge) DO UPDATE SET
+                nome_municipio=EXCLUDED.nome_municipio, uf=EXCLUDED.uf,
+                ativo=EXCLUDED.ativo,
+                max_instalacoes_trial=EXCLUDED.max_instalacoes_trial,
+                atualizado_em=EXCLUDED.atualizado_em
+            RETURNING codigo_ibge, nome_municipio, uf, ativo,
+                      max_instalacoes_trial, criado_em, atualizado_em"""), dados).mappings().one()
+        return self._datas_iso(dict(row))
+
+    def listar_municipios_trial(self) -> list[dict[str, Any]]:
+        from sqlalchemy import text
+        with self._engine.connect() as con:
+            rows = con.execute(text("""SELECT codigo_ibge, nome_municipio, uf, ativo,
+                max_instalacoes_trial, criado_em, atualizado_em
+                FROM municipios_trial ORDER BY nome_municipio, codigo_ibge""")).mappings().all()
+        return [self._datas_iso(dict(row)) for row in rows]
+
+    def emitir_trial_se_elegivel(self, instalacao_id: str, codigo_ibge: str,
+                                 agora: datetime, dias: int, dias_offline: int,
+                                 versao_minima: str) -> Optional[dict[str, Any]]:
+        from sqlalchemy import text
+        with self._engine.begin() as con:
+            con.execute(text("SELECT pg_advisory_xact_lock(hashtext(:i))"), {"i": instalacao_id})
+            con.execute(text("SELECT pg_advisory_xact_lock(hashtext(:c))"), {"c": codigo_ibge})
+            conhecida = con.execute(text(
+                "SELECT 1 FROM instalacoes WHERE instalacao_id=:i"
+            ), {"i": instalacao_id}).first()
+            if conhecida:
+                return None
+            municipio = con.execute(text("""SELECT codigo_ibge, nome_municipio, uf,
+                max_instalacoes_trial FROM municipios_trial
+                WHERE codigo_ibge=:c AND ativo=TRUE FOR UPDATE"""), {"c": codigo_ibge}).mappings().first()
+            if municipio is None:
+                return None
+            licenca = con.execute(text("""SELECT licenca_id, plano, status, expira_em,
+                max_instalacoes_ativas FROM licencas WHERE codigo_ibge=:c
+                AND status IN ('ativa','suspensa','pendente') FOR UPDATE"""), {
+                "c": codigo_ibge,
+            }).mappings().first()
+            if licenca is not None:
+                if (licenca["plano"] != "trial" or licenca["status"] != "ativa"
+                        or agora >= licenca["expira_em"]):
+                    return None
+                licenca_id = str(licenca["licenca_id"])
+                limite = int(licenca["max_instalacoes_ativas"])
+            else:
+                licenca_id = str(uuid4())
+                limite = int(municipio["max_instalacoes_trial"])
+                fim = agora + timedelta(days=dias)
+                con.execute(text("""INSERT INTO licencas (
+                    licenca_id, codigo_ibge, nome_municipio, status, inicio_em, expira_em,
+                    max_auditores, max_instalacoes_ativas, dias_offline, versao_minima,
+                    criada_em, atualizada_em, plano
+                ) VALUES (:l, :c, :n, 'ativa', :a, :f, NULL, :m, :d, :v, :a, :a, 'trial')"""), {
+                    "l": licenca_id, "c": codigo_ibge, "n": municipio["nome_municipio"],
+                    "a": agora, "f": fim, "m": limite, "d": dias_offline,
+                    "v": versao_minima,
+                })
+            ativas = int(con.execute(text("""SELECT count(*) FROM instalacoes
+                WHERE licenca_id=:l AND status_instalacao='ativa'"""), {
+                "l": licenca_id,
+            }).scalar_one())
+            if ativas >= limite:
+                return None
+            con.execute(text("""INSERT INTO instalacoes (
+                instalacao_id, codigo_ibge, max_usuarios, revogada, licenca_id,
+                status_instalacao, associada_em, ativada_em
+            ) VALUES (:i, :c, NULL, FALSE, :l, 'ativa', :a, :a)"""), {
+                "i": instalacao_id, "c": codigo_ibge, "l": licenca_id, "a": agora,
+            })
+            con.execute(text("""INSERT INTO eventos_licenca (licenca_id, acao, detalhes, quando)
+                VALUES (:l, 'trial_emitido', :d, :a)"""), {
+                "l": licenca_id,
+                "d": json.dumps({"instalacao_id": instalacao_id}, sort_keys=True),
+                "a": agora,
+            })
+        return {
+            "licenca": self.obter_licenca(licenca_id) or {},
+            "instalacao": self.obter_instalacao(instalacao_id) or {},
+        }
+
+    def converter_trial(self, licenca_id: str,
+                        dados: dict[str, Any]) -> Optional[dict[str, Any]]:
+        from sqlalchemy import text
+        with self._engine.begin() as con:
+            con.execute(text("SELECT pg_advisory_xact_lock(hashtext(:l))"), {"l": licenca_id})
+            atual = con.execute(text(
+                "SELECT plano FROM licencas WHERE licenca_id=:l FOR UPDATE"
+            ), {"l": licenca_id}).mappings().first()
+            if atual is None:
+                return None
+            if atual["plano"] != "trial":
+                raise ValueError("a licença informada não é trial")
+            ativas = int(con.execute(text("""SELECT count(*) FROM instalacoes
+                WHERE licenca_id=:l AND status_instalacao='ativa'"""), {
+                "l": licenca_id,
+            }).scalar_one())
+            if int(dados["max_instalacoes_ativas"]) < ativas:
+                raise ValueError("o limite não pode ser menor que as instalações ativas")
+            con.execute(text("""UPDATE licencas SET plano='contratado', status=:status,
+                inicio_em=:inicio_em, expira_em=:expira_em, max_auditores=:max_auditores,
+                max_instalacoes_ativas=:max_instalacoes_ativas, dias_offline=:dias_offline,
+                versao_minima=:versao_minima, atualizada_em=:atualizada_em
+                WHERE licenca_id=:licenca_id"""), {**dados, "licenca_id": licenca_id})
+            con.execute(text("""UPDATE municipios_trial SET ativo=FALSE,
+                atualizado_em=:atualizada_em WHERE codigo_ibge=(
+                    SELECT codigo_ibge FROM licencas WHERE licenca_id=:licenca_id
+                )"""), {**dados, "licenca_id": licenca_id})
+        return self.obter_licenca(licenca_id)
 
     def registrar_auditoria_admin(self, operador: str, acao: str, alvo: str,
                                   resultado: str, detalhes: str,
@@ -1149,7 +1383,8 @@ class RepositorioPostgres:
             )).scalar_one())
             ativas_incompletas = int(con.execute(text("""SELECT count(*) FROM licencas
                 WHERE status='ativa' AND (
-                    inicio_em IS NULL OR expira_em IS NULL OR max_auditores IS NULL
+                    inicio_em IS NULL OR expira_em IS NULL
+                    OR (max_auditores IS NULL AND plano <> 'trial')
                 )""")).scalar_one())
             excesso = int(con.execute(text("""SELECT count(*) FROM (
                 SELECT l.licenca_id FROM licencas l

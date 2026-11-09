@@ -167,8 +167,9 @@ def test_nao_reduz_limite_abaixo_das_instalacoes_ativas():
 
 def test_api_admin_cria_renova_associa_e_registra_historico(cliente):
     c, _, _ = cliente
-    inicio = (_AGORA - timedelta(days=1)).isoformat()
-    fim = (_AGORA + timedelta(days=30)).isoformat()
+    referencia = datetime.now(timezone.utc)
+    inicio = (referencia - timedelta(days=1)).isoformat()
+    fim = (referencia + timedelta(days=30)).isoformat()
     criada = c.post("/admin/licencas", headers=_H, json={
         "codigo_ibge": _IBGE, "nome_municipio": "Salvador",
         "status": "ativa", "inicio_em": inicio,
@@ -188,7 +189,7 @@ def test_api_admin_cria_renova_associa_e_registra_historico(cliente):
     consulta = c.post("/v1/consulta", json=_REQ).json()
     assert consulta["status"] == "ativa" and consulta["max_usuarios"] == 6
 
-    novo_fim = (_AGORA + timedelta(days=365)).isoformat()
+    novo_fim = (referencia + timedelta(days=365)).isoformat()
     renovada = c.patch(
         f"/admin/licencas/{licenca_id}", headers=_H,
         json={"expira_em": novo_fim, "status": "ativa"},

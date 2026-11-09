@@ -159,8 +159,9 @@ _TEMPLATE = """<!doctype html>
     <div class="cartao">
       <h2>Nova licença contratual</h2>
       <div class="linha">
-        <div><label>Código IBGE</label><input id="l_ibge" placeholder="ex.: 2927408"></div>
-        <div><label>Nome do município</label><input id="l_nome" maxlength="160" placeholder="ex.: Salvador"></div>
+        <div><label>Município ou código IBGE</label><input id="l_municipio" list="l_municipios_opcoes" autocomplete="off" placeholder="digite ao menos 2 caracteres" oninput="buscarMunicipioCadastro()" onchange="selecionarMunicipioCadastro()"><datalist id="l_municipios_opcoes"></datalist></div>
+        <div><label>Código IBGE</label><input id="l_ibge" readonly></div>
+        <div><label>Nome oficial selecionado</label><input id="l_nome" readonly></div>
         <div><label>Início</label><input id="l_inicio" type="date"></div>
         <div><label>Expiração</label><input id="l_fim" type="date"></div>
         <div><label>Estado inicial</label><select id="l_status"><option value="pendente">pendente</option><option value="ativa">ativa</option></select></div>
@@ -172,6 +173,21 @@ _TEMPLATE = """<!doctype html>
         <div><label>Versão mínima</label><input id="l_ver" value="1.0.0"></div>
       </div>
       <button style="margin-top:12px" onclick="criarLicenca()">Criar licença</button>
+    </div>
+
+    <div class="cartao">
+      <h2>Municípios habilitados para avaliação</h2>
+      <p class="rodape" style="text-align:left">A habilitação afeta somente novas instalações compatíveis. Instalações já conhecidas nunca são convertidas automaticamente.</p>
+      <div class="linha">
+        <div><label>Município ou código IBGE</label><input id="t_municipio" list="t_municipios_opcoes" autocomplete="off" placeholder="digite ao menos 2 caracteres" oninput="buscarMunicipioTrial()" onchange="selecionarMunicipioTrial()"><datalist id="t_municipios_opcoes"></datalist></div>
+        <div><label>Código IBGE selecionado</label><input id="t_ibge" readonly></div>
+        <div style="flex:0;min-width:180px"><label>Máx. instalações trial</label><input id="t_max" type="number" min="1" value="1"></div>
+        <div style="flex:0;align-self:flex-end"><button onclick="habilitarMunicipioTrial()">Habilitar</button></div>
+      </div>
+      <div class="tabela-scroll"><table style="margin-top:12px">
+        <thead><tr><th>Município</th><th>UF</th><th>IBGE</th><th>Estado</th><th>Máx.</th><th></th></tr></thead>
+        <tbody id="tab-trial"><tr><td colspan="6" class="vazio">Nenhum município habilitado.</td></tr></tbody>
+      </table></div>
     </div>
 
     <div class="cartao">
@@ -227,10 +243,11 @@ _TEMPLATE = """<!doctype html>
 
     <div class="cartao">
       <h2>Instalações <span class="dir"><input id="busca" placeholder="filtrar por UUID ou IBGE" style="width:220px" oninput="renderInstalacoes()"></span></h2>
-      <table>
-        <thead><tr><th>instalacao_id</th><th>IBGE</th><th>máx.</th><th>estado</th><th></th></tr></thead>
-        <tbody id="tab-inst"><tr><td colspan="5" class="vazio">Entre com o token para carregar.</td></tr></tbody>
+      <div class="tabela-scroll"><table>
+        <thead><tr><th>instalacao_id</th><th>Município / IBGE</th><th>Licença / plano</th><th>Estado</th><th>Criada / última consulta</th><th></th></tr></thead>
+        <tbody id="tab-inst"><tr><td colspan="6" class="vazio">Entre com o token para carregar.</td></tr></tbody>
       </table>
+      </div>
     </div>
 
     <div class="cartao">
@@ -332,6 +349,9 @@ _TEMPLATE = """<!doctype html>
 <script>
 let _instalacoes = [];
 let _licencas = [];
+let _municipiosTrial = [];
+let _sugestoesLicenca = [];
+let _sugestoesTrial = [];
 let _paginaRelacionamentos = 1;
 let _sessao = {autenticado:false,papeis:[]};
 let _csrf = '';
@@ -464,20 +484,23 @@ async function inicializarSessao(){
 async function carregar(){
   if (!tok()&&!(_sessao.autenticado&&temPapel('licencas_operador'))){ aviso('Informe o ADMIN_TOKEN.', false); return; }
   try{
-    const [inst, mr, tent, lic, mig, contexto] = await Promise.all([
+    const [inst, mr, tent, lic, mig, contexto, trial] = await Promise.all([
       chamar('GET','/admin/instalacoes'),
       chamar('GET','/admin/municipios-revogados'),
       chamar('GET','/admin/tentativas?limite=100'),
       chamar('GET','/admin/licencas'),
       chamar('GET','/admin/migracao-legado/status'),
-      chamar('GET','/admin/contexto')
+      chamar('GET','/admin/contexto'),
+      chamar('GET','/admin/municipios-trial')
     ]);
     document.getElementById('painel').style.display='';
     document.getElementById('aba-licencas').disabled=false;
     abrirArea('licencas');
-    document.getElementById('amb').textContent = contexto && contexto.ambiente ? ('ambiente: '+contexto.ambiente) : '';
+    document.getElementById('amb').textContent = contexto && contexto.ambiente
+      ? ('ambiente: '+contexto.ambiente+' · trial: '+(contexto.trial_ativo?'habilitado':'desabilitado')) : '';
     _instalacoes = inst.instalacoes || [];
     _licencas = lic.licencas || [];
+    _municipiosTrial = trial.municipios || [];
     document.getElementById('box-legado').style.display = mig.concluida ? 'none' : '';
     const ativas = _instalacoes.filter(i=>i.status_instalacao ? i.status_instalacao==='ativa' : !i.revogada).length;
     document.getElementById('r-total').textContent = _instalacoes.length;
@@ -486,6 +509,7 @@ async function carregar(){
     document.getElementById('r-munic').textContent = (mr.codigos||[]).length;
     renderInstalacoes();
     renderLicencas();
+    renderMunicipiosTrial();
     popularFiltrosRelacionamentos();
     renderRelacionamentos(true);
     renderMunicipios(mr.codigos||[]);
@@ -499,6 +523,47 @@ function dataBrasileira(iso){
   const partes=String(iso||'').slice(0,10).split('-');
   return partes.length===3 ? partes[2]+'/'+partes[1]+'/'+partes[0] : 'data não informada';
 }
+async function buscarMunicipios(entradaId,listaId,destino){
+  const termo=document.getElementById(entradaId).value.trim();
+  if(termo.length<2){document.getElementById(listaId).innerHTML='';return;}
+  try{
+    const r=await chamar('GET','/admin/municipios/busca?termo='+encodeURIComponent(termo)+'&limite=20');
+    window[destino]=r.municipios||[];
+    document.getElementById(listaId).innerHTML=window[destino].map(m=>'<option value="'+esc(m.rotulo)+'"></option>').join('');
+  }catch(e){}
+}
+function buscarMunicipioCadastro(){buscarMunicipios('l_municipio','l_municipios_opcoes','_sugestoesLicenca');}
+function buscarMunicipioTrial(){buscarMunicipios('t_municipio','t_municipios_opcoes','_sugestoesTrial');}
+function selecionarMunicipio(entradaId,ibgeId,nomeId,sugestoes){
+  const valor=document.getElementById(entradaId).value.trim();
+  const item=sugestoes.find(m=>m.rotulo===valor||m.codigo_ibge===valor);
+  document.getElementById(ibgeId).value=item?item.codigo_ibge:'';
+  if(nomeId)document.getElementById(nomeId).value=item?item.nome:'';
+}
+function selecionarMunicipioCadastro(){selecionarMunicipio('l_municipio','l_ibge','l_nome',_sugestoesLicenca);}
+function selecionarMunicipioTrial(){selecionarMunicipio('t_municipio','t_ibge',null,_sugestoesTrial);}
+
+function renderMunicipiosTrial(){
+  const tb=document.getElementById('tab-trial');tb.innerHTML='';
+  if(!_municipiosTrial.length){tb.innerHTML='<tr><td colspan="6" class="vazio">Nenhum município habilitado.</td></tr>';return;}
+  for(const m of _municipiosTrial){
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+esc(m.nome_municipio)+'</td><td>'+esc(m.uf)+'</td><td>'+esc(m.codigo_ibge)+'</td><td>'+tagStatus(m.ativo?'ativa':'suspensa')+'</td><td>'+esc(m.max_instalacoes_trial)+'</td><td><button class="'+(m.ativo?'perigo ':'sec ')+'peq" onclick="alterarMunicipioTrial(\\''+arg(m.codigo_ibge)+'\\','+(!m.ativo)+','+m.max_instalacoes_trial+')">'+(m.ativo?'Desabilitar':'Habilitar')+'</button></td>';
+    tb.appendChild(tr);
+  }
+}
+async function habilitarMunicipioTrial(){
+  selecionarMunicipioTrial();
+  const codigo=document.getElementById('t_ibge').value;
+  if(!codigo){aviso('Selecione um município da lista oficial.',false);return;}
+  const maximo=parseInt(document.getElementById('t_max').value,10);
+  try{await chamar('POST','/admin/municipios-trial',{codigo_ibge:codigo,ativo:true,max_instalacoes_trial:maximo});aviso('Município habilitado para avaliação.',true);carregar();}catch(e){}
+}
+async function alterarMunicipioTrial(codigoCod,ativo,maximo){
+  const codigo=decodeURIComponent(codigoCod);
+  if(!confirm((ativo?'Habilitar':'Desabilitar')+' a emissão de novos trials para este município?'))return;
+  try{await chamar('POST','/admin/municipios-trial',{codigo_ibge:codigo,ativo,max_instalacoes_trial:maximo});carregar();}catch(e){}
+}
 function renderLicencas(){
   const tb=document.getElementById('tab-lic'); tb.innerHTML='';
   const sel=document.getElementById('v_lic'); sel.innerHTML='<option value="">selecione</option>';
@@ -507,7 +572,8 @@ function renderLicencas(){
     const id=arg(l.licenca_id);
     const op=document.createElement('option'); op.value=l.licenca_id;
     op.textContent=rotuloLicenca(l); sel.appendChild(op);
-    const acoes='<button class="sec peq" onclick="renovarLicenca(\\''+id+'\\')">Renovar</button> '+
+    const converter=l.plano==='trial'?'<button class="sec peq" onclick="converterTrial(\\''+id+'\\')">Converter em contrato</button> ':'';
+    const acoes=converter+'<button class="sec peq" onclick="renovarLicenca(\\''+id+'\\')">Renovar</button> '+
       '<button class="sec peq" onclick="editarNomeMunicipio(\\''+id+'\\')">Nome</button> '+
       '<button class="sec peq" onclick="alterarStatusLicenca(\\''+id+'\\',\\'ativa\\')">Ativar</button> '+
       '<button class="sec peq" onclick="alterarStatusLicenca(\\''+id+'\\',\\'suspensa\\')">Suspender</button> '+
@@ -516,8 +582,8 @@ function renderLicencas(){
     const tr=document.createElement('tr');
     tr.innerHTML='<td>'+esc(nomeMunicipio(l))+'</td>'+
       '<td>'+esc(l.codigo_ibge)+'<br><span class="cod">'+esc(l.licenca_id)+'</span></td>'+
-      '<td>'+tagStatus(l.status)+'</td><td>'+dataCurta(l.inicio_em)+' a '+dataCurta(l.expira_em)+'</td>'+
-      '<td>'+esc(l.max_auditores)+'</td><td>'+esc(l.instalacoes_ativas)+' / '+esc(l.max_instalacoes_ativas)+'</td>'+
+      '<td>'+tagStatus(l.status)+'<br><span class="tag t-outro">'+esc(l.plano||'contratado')+'</span></td><td>'+dataCurta(l.inicio_em)+' a '+dataCurta(l.expira_em)+'</td>'+
+      '<td>'+(l.max_auditores==null?'sem limite':esc(l.max_auditores))+'</td><td>'+esc(l.instalacoes_ativas)+' / '+esc(l.max_instalacoes_ativas)+'</td>'+
       '<td>'+acoes+'</td>';
     tb.appendChild(tr);
   }
@@ -619,6 +685,7 @@ function limparFiltrosRelacionamentos(){
 }
 
 async function criarLicenca(){
+  selecionarMunicipioCadastro();
   const ibge=document.getElementById('l_ibge').value.trim();
   const nome=document.getElementById('l_nome').value.trim();
   const ini=document.getElementById('l_inicio').value; const fim=document.getElementById('l_fim').value;
@@ -631,6 +698,18 @@ async function criarLicenca(){
     versao_minima:document.getElementById('l_ver').value.trim()};
   if(!confirm('Criar a licença de '+nome+' ('+ibge+') com término em '+fim+'?'))return;
   try{ await chamar('POST','/admin/licencas',corpo); aviso('Licença criada.',true); carregar(); }catch(e){}
+}
+async function converterTrial(idCod){
+  const id=decodeURIComponent(idCod);
+  const fim=prompt('Término do contrato (AAAA-MM-DD):');if(!fim)return;
+  const aud=parseInt(prompt('Máximo de auditores:','5')||'',10);if(!aud)return;
+  const inst=parseInt(prompt('Máximo de instalações ativas:','1')||'',10);if(!inst)return;
+  const hoje=new Date().toISOString().slice(0,10);
+  if(!confirm('Converter o trial no contrato até '+fim+'? O mesmo vínculo será preservado.'))return;
+  try{await chamar('POST','/admin/licencas/'+encodeURIComponent(id)+'/converter-contrato',{
+    status:'ativa',inicio_em:hoje+'T00:00:00+00:00',expira_em:fim+'T23:59:59+00:00',
+    max_auditores:aud,max_instalacoes_ativas:inst,dias_offline:7,versao_minima:'1.0.0'
+  });aviso('Trial convertido em licença contratual.',true);carregar();}catch(e){}
 }
 async function editarNomeMunicipio(idCod){
   const id=decodeURIComponent(idCod);
@@ -685,7 +764,7 @@ function renderInstalacoes(){
   const tb = document.getElementById('tab-inst'); tb.innerHTML='';
   const lista = _instalacoes.filter(i => !f ||
     String(i.instalacao_id).toLowerCase().includes(f) || String(i.codigo_ibge).toLowerCase().includes(f));
-  if (!lista.length){ tb.innerHTML='<tr><td colspan="5" class="vazio">'+(f?'Nada encontrado para o filtro.':'Nenhuma instalação autorizada ainda.')+'</td></tr>'; return; }
+  if (!lista.length){ tb.innerHTML='<tr><td colspan="6" class="vazio">'+(f?'Nada encontrado para o filtro.':'Nenhuma instalação autorizada ainda.')+'</td></tr>'; return; }
   for (const i of lista){
     const nomeEstado = i.status_instalacao || (i.revogada ? 'revogada' : 'ativa');
     const estado = tagStatus(nomeEstado);
@@ -697,8 +776,10 @@ function renderInstalacoes(){
         ? '<button class="sec peq" onclick="reativar(\\''+arg(i.instalacao_id)+'\\',\\''+arg(i.codigo_ibge)+'\\','+(i.max_usuarios==null?'null':i.max_usuarios)+')">Reativar</button>'
         : '<button class="perigo peq" onclick="revogar(\\''+arg(i.instalacao_id)+'\\')">Revogar</button>');
     const tr=document.createElement('tr');
-    tr.innerHTML='<td class="cod">'+esc(i.instalacao_id)+'</td><td>'+esc(i.codigo_ibge)+'</td>'+
-      '<td>'+(i.max_usuarios==null?'—':esc(i.max_usuarios))+'</td><td>'+estado+'</td><td style="text-align:right">'+acao+'</td>';
+    const lic=_licencas.find(l=>String(l.licenca_id)===String(i.licenca_id));
+    tr.innerHTML='<td class="cod">'+esc(i.instalacao_id)+'</td><td>'+esc(nomeMunicipio(lic))+'<br><span class="cod">'+esc(i.codigo_ibge)+'</span></td>'+
+      '<td><span class="cod">'+esc(i.licenca_id||'legado')+'</span><br>'+esc(lic?(lic.plano||'contratado'):'legado')+'</td><td>'+estado+'</td>'+
+      '<td>'+esc(quando(i.criada_em))+'<br>'+esc(quando(i.ultima_consulta_em))+'</td><td style="text-align:right">'+acao+'</td>';
     tb.appendChild(tr);
   }
 }

@@ -111,8 +111,10 @@ def test_postgres_cria_esquema_completo_em_banco_vazio(banco_postgres):
             "licencas", "instalacoes", "tentativas", "eventos_licenca",
             "auditoria_admin", "migracoes_dados", "migracoes_schema",
             "recuperacoes_senha",
+            "municipios_trial",
         } <= tabelas
         assert "nome_municipio" in colunas_licencas
+        assert "plano" in colunas_licencas
         assert "associada_em" in colunas_instalacoes
         assert repo.pronto() is True
     finally:
@@ -163,6 +165,46 @@ def test_postgres_persiste_licenca_apos_reabrir_repositorio(banco_postgres):
         assert segundo.contar_instalacoes_ativas(licenca["licenca_id"]) == 1
     finally:
         segundo._engine.dispose()
+
+
+def test_postgres_emite_e_converte_trial_atomicamente(banco_postgres):
+    url = banco_postgres()
+    repo = RepositorioPostgres(url)
+    instalacao_id = str(uuid.uuid4())
+    try:
+        repo.configurar_municipio_trial({
+            "codigo_ibge": _IBGE,
+            "nome_municipio": "Salvador",
+            "uf": "BA",
+            "ativo": True,
+            "max_instalacoes_trial": 1,
+            "atualizado_em": _AGORA,
+        })
+        emitida = repo.emitir_trial_se_elegivel(
+            instalacao_id, _IBGE, _AGORA, 30, 2, "1.1.0",
+        )
+        assert emitida is not None
+        licenca_id = emitida["licenca"]["licenca_id"]
+        assert emitida["licenca"]["plano"] == "trial"
+        assert emitida["instalacao"]["licenca_id"] == licenca_id
+        assert repo.emitir_trial_se_elegivel(
+            str(uuid.uuid4()), _IBGE, _AGORA, 30, 2, "1.1.0",
+        ) is None
+
+        convertida = repo.converter_trial(licenca_id, {
+            "status": "ativa",
+            "inicio_em": _AGORA,
+            "expira_em": _AGORA + timedelta(days=365),
+            "max_auditores": 5,
+            "max_instalacoes_ativas": 1,
+            "dias_offline": 7,
+            "versao_minima": "1.0.0",
+            "atualizada_em": _AGORA,
+        })
+        assert convertida is not None and convertida["plano"] == "contratado"
+        assert repo.listar_municipios_trial()[0]["ativo"] is False
+    finally:
+        repo._engine.dispose()
 
 
 def test_postgres_transfere_instalacao_ativa_para_licenca_de_outro_municipio(

@@ -17,7 +17,7 @@ from typing import Any
 
 from app.validacao import requisicao_publica
 
-VERSAO_CONTRATO = 1
+VERSAO_CONTRATO = 2
 
 CAMPOS_REQUISICAO = frozenset({"instalacao_id", "codigo_ibge", "versao_app", "nonce"})
 
@@ -33,6 +33,7 @@ AMBIENTE_PRODUCAO = "producao"
 CAMPOS_RESPOSTA = (
     "status", "codigo_ibge", "instalacao_id", "nonce", "emitida_em", "expira_em",
     "offline_ate", "max_usuarios", "versao_minima", "key_id", "ambiente",
+    "plano",
 )
 
 

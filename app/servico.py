@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import re
 from typing import Any, Optional
 
 from app import contrato, licencas
@@ -23,6 +24,20 @@ class Config:
     versao_minima: str = "1.0.0"
     dias_validade: int = 365
     dias_offline: int = 7               # padrão do serviço; a licença carimba o prazo
+    trial_ativo: bool = False
+    versao_trial_minima: str = "1.1.0"
+    trial_dias: int = 30
+    trial_dias_offline: int = 2
+
+
+def _versao_tupla(valor: str) -> tuple[int, ...]:
+    encontrado = re.match(r"^(\d+)\.(\d+)\.(\d+)", str(valor or ""))
+    return tuple(map(int, encontrado.groups())) if encontrado else (0, 0, 0)
+
+
+def suporta_plano(versao_app: str, minima: str) -> bool:
+    """O campo aditivo só é enviado a clientes que declararam entendê-lo."""
+    return _versao_tupla(versao_app) >= _versao_tupla(minima)
 
 
 def _iso(dt: datetime) -> str:
@@ -86,6 +101,8 @@ def decidir(
         if licenca is None or str(licenca.get("codigo_ibge") or "") != ibge:
             resp["status"] = "instalacao_nao_autorizada"
             return resp
+        if suporta_plano(req["versao_app"], cfg.versao_trial_minima):
+            resp["plano"] = str(licenca.get("plano") or "contratado")
         if repo.municipio_revogado(ibge):
             resp["status"] = "revogada"
             return resp
@@ -119,7 +136,8 @@ def decidir(
             return resp
 
         resp["status"] = "ativa"
-        resp["max_usuarios"] = int(licenca["max_auditores"])
+        max_auditores = licenca.get("max_auditores")
+        resp["max_usuarios"] = int(max_auditores) if max_auditores is not None else None
         resp["versao_minima"] = str(licenca.get("versao_minima") or cfg.versao_minima)
         resp["expira_em"] = _iso(fim)
         dias_offline = int(licenca.get("dias_offline") or cfg.dias_offline)
@@ -129,6 +147,8 @@ def decidir(
     # Compatibilidade temporária: allowlist anterior ao modelo contratual. A
     # Etapa 4 converterá estes registros sem inventar data de contrato.
     resp["max_usuarios"] = autorizacao.get("max_usuarios")
+    if suporta_plano(req["versao_app"], cfg.versao_trial_minima):
+        resp["plano"] = "contratado"
     if autorizacao.get("revogada") or repo.municipio_revogado(ibge):
         resp["status"] = "revogada"
         return resp

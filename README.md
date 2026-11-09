@@ -26,6 +26,10 @@ o startup; somente as alterações aditivas e versionadas do esquema são aplica
   para qualquer outra licença, inclusive de outro município e independentemente do estado do
   contrato anterior, mediante `confirmar_transferencia: true`.
 - `GET /admin/licencas` e `GET /admin/licencas/{id}/historico` — consulta contratos e auditoria.
+- `GET /admin/municipios/busca` — autocomplete oficial por nome ou código IBGE.
+- `POST /admin/municipios-trial` — habilita ou desabilita novas avaliações por município.
+- `POST /admin/licencas/{id}/converter-contrato` — converte o trial no mesmo registro e preserva
+  instalações e histórico.
 - `POST /admin/autorizar` `{instalacao_id, codigo_ibge, max_usuarios?}` — compatibilidade com a
   allowlist antiga até sua migração na Etapa 4; não deve ser usado em novos contratos.
 - `POST /admin/revogar` `{instalacao_id}` — revoga uma instalação.
@@ -88,6 +92,10 @@ Erros de entrada respondem 400/422 sem rastreamento. Uma falha interna imprevist
 | `LICENCA_VERSAO_MINIMA` | não | `1.0.0` | Padrão usado apenas pela allowlist antiga; contratos novos gravam a própria versão mínima. |
 | `LICENCA_DIAS_VALIDADE` | não | `365` | Compatibilidade temporária da allowlist antiga. Contratos novos usam `expira_em` fixo. |
 | `LICENCA_DIAS_OFFLINE` | não | `7` | Padrão legado. Cada contrato novo grava sua tolerância, que nunca ultrapassa `expira_em`. |
+| `LICENCA_TRIAL_ATIVO` | não | `false` | Chave geral de emissão. Desligar interrompe somente novos trials; os já emitidos preservam a vigência. |
+| `LICENCA_VERSAO_TRIAL_MINIMA` | não | `1.1.0` | Menor versão do SICOF que entende o campo assinado `plano` e a faixa de avaliação. |
+| `LICENCA_TRIAL_DIAS` | não | `30` | Vigência fixa de uma nova avaliação municipal. |
+| `LICENCA_TRIAL_DIAS_OFFLINE` | não | `2` | Tolerância off-line das licenças trial. |
 | `LICENCA_RATE_MAX` | não | `12` | Teto de consultas por instalação na janela. |
 | `LICENCA_RATE_JANELA_S` | não | `3600` | Janela do teto, em segundos. |
 | `LICENCA_REPLICAS` | **sim em produção** | — | Deve ser `1` enquanto o limitador for local ao processo. |
@@ -175,6 +183,24 @@ sem `confirmar_transferencia: true`, evitando alterações silenciosas fora do p
 O painel apresenta os relacionamentos entre licenças e instalações, com filtros por licença,
 município e estado. A listagem mostra até dez vínculos por página e usa a data da associação ou da
 alteração mais recente do vínculo.
+
+## Versão de avaliação
+
+O trial é opt-in em duas camadas: `LICENCA_TRIAL_ATIVO=true` no serviço e município habilitado no
+painel. Somente a primeira consulta de uma **instalação desconhecida**, com SICOF compatível e
+município oficial habilitado, pode criar a licença de 30 dias. A criação da licença, o consumo do
+limite municipal e a associação da instalação acontecem na mesma transação.
+
+Instalações já conhecidas continuam exatamente no modelo atual, inclusive registros legados e
+licenças contratadas. Elas nunca são migradas para trial durante uma consulta. Clientes anteriores
+à versão mínima não recebem o novo campo `plano` e não podem iniciar avaliação. Código IBGE vazio
+ou inválido continua sendo erro 400. Desabilitar um município ou a chave geral não revoga trials já
+emitidos; cada um continua válido até `expira_em`.
+
+O cadastro contratual e a habilitação trial usam o mesmo catálogo embarcado de 5.571 municípios.
+O operador pode digitar nome ou código, e o autocomplete mostra nome, UF e código IBGE. Converter
+um trial exige informar vigência e limites comerciais e atualiza a mesma licença para
+`plano=contratado`, sem trocar o `licenca_id` nem a instalação associada.
 
 Exemplo equivalente pela API:
 
