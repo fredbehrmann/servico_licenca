@@ -525,23 +525,39 @@ function dataBrasileira(iso){
 }
 async function buscarMunicipios(entradaId,listaId,destino){
   const termo=document.getElementById(entradaId).value.trim();
-  if(termo.length<2){document.getElementById(listaId).innerHTML='';return;}
+  if(termo.length<2){window[destino]=[];document.getElementById(listaId).innerHTML='';return [];}
   try{
     const r=await chamar('GET','/admin/municipios/busca?termo='+encodeURIComponent(termo)+'&limite=20');
+    // Uma resposta de uma digitação anterior não pode substituir a lista da
+    // entrada atual nem apagar um município que o operador acabou de escolher.
+    if(document.getElementById(entradaId).value.trim()!==termo)return window[destino]||[];
     window[destino]=r.municipios||[];
     document.getElementById(listaId).innerHTML=window[destino].map(m=>'<option value="'+esc(m.rotulo)+'"></option>').join('');
-  }catch(e){}
+    return window[destino];
+  }catch(e){return [];}
 }
-function buscarMunicipioCadastro(){buscarMunicipios('l_municipio','l_municipios_opcoes','_sugestoesLicenca');}
-function buscarMunicipioTrial(){buscarMunicipios('t_municipio','t_municipios_opcoes','_sugestoesTrial');}
+function textoMunicipio(valor){return String(valor||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();}
 function selecionarMunicipio(entradaId,ibgeId,nomeId,sugestoes){
   const valor=document.getElementById(entradaId).value.trim();
-  const item=sugestoes.find(m=>m.rotulo===valor||m.codigo_ibge===valor);
+  let item=sugestoes.find(m=>m.rotulo===valor||m.codigo_ibge===valor);
+  if(!item){
+    const exatos=sugestoes.filter(m=>textoMunicipio(m.nome)===textoMunicipio(valor));
+    if(exatos.length===1)item=exatos[0];
+  }
   document.getElementById(ibgeId).value=item?item.codigo_ibge:'';
   if(nomeId)document.getElementById(nomeId).value=item?item.nome:'';
+  return item||null;
 }
 function selecionarMunicipioCadastro(){selecionarMunicipio('l_municipio','l_ibge','l_nome',_sugestoesLicenca);}
 function selecionarMunicipioTrial(){selecionarMunicipio('t_municipio','t_ibge',null,_sugestoesTrial);}
+function buscarMunicipioCadastro(){
+  selecionarMunicipioCadastro();
+  buscarMunicipios('l_municipio','l_municipios_opcoes','_sugestoesLicenca').then(selecionarMunicipioCadastro);
+}
+function buscarMunicipioTrial(){
+  selecionarMunicipioTrial();
+  buscarMunicipios('t_municipio','t_municipios_opcoes','_sugestoesTrial').then(selecionarMunicipioTrial);
+}
 
 function renderMunicipiosTrial(){
   const tb=document.getElementById('tab-trial');tb.innerHTML='';

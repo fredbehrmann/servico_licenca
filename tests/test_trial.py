@@ -35,13 +35,25 @@ def _consulta(instalacao: str, versao: str = "1.1.0") -> dict:
 
 def test_catalogo_autocomplete_nome_uf_e_codigo():
     por_nome = municipios.buscar("salv", 5)
+    por_nome_completo = municipios.buscar("Salvador", 5)
     por_codigo = municipios.buscar("2927408", 5)
     assert por_nome[0] == {
         "codigo_ibge": "2927408", "nome": "Salvador", "uf": "BA",
         "rotulo": "Salvador/BA — 2927408",
     }
+    assert por_nome_completo[0] == por_nome[0]
     assert por_codigo[0] == por_nome[0]
     assert municipios.buscar("s", 5) == []
+
+
+def test_painel_preenche_ibge_apos_selecao_do_municipio(cliente):
+    c, _, _ = cliente
+    texto = c.get("/admin").text
+
+    assert "buscarMunicipioTrial()" in texto
+    assert ".then(selecionarMunicipioTrial)" in texto
+    assert "if(exatos.length===1)item=exatos[0]" in texto
+    assert 'id="t_ibge" readonly' in texto
 
 
 def test_trial_nasce_na_primeira_consulta_compativel(cliente):
