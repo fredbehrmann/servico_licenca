@@ -51,7 +51,8 @@ def test_painel_preenche_ibge_apos_selecao_do_municipio(cliente):
     texto = c.get("/admin").text
 
     assert "buscarMunicipioTrial()" in texto
-    assert ".then(selecionarMunicipioTrial)" in texto
+    assert "_sugestoesTrial=sugestoes" in texto
+    assert "window[destino]" not in texto
     assert "if(exatos.length===1)item=exatos[0]" in texto
     assert 'id="t_ibge" readonly' in texto
 

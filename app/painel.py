@@ -523,17 +523,17 @@ function dataBrasileira(iso){
   const partes=String(iso||'').slice(0,10).split('-');
   return partes.length===3 ? partes[2]+'/'+partes[1]+'/'+partes[0] : 'data não informada';
 }
-async function buscarMunicipios(entradaId,listaId,destino){
+async function buscarMunicipios(entradaId,listaId){
   const termo=document.getElementById(entradaId).value.trim();
-  if(termo.length<2){window[destino]=[];document.getElementById(listaId).innerHTML='';return [];}
+  if(termo.length<2){document.getElementById(listaId).innerHTML='';return [];}
   try{
     const r=await chamar('GET','/admin/municipios/busca?termo='+encodeURIComponent(termo)+'&limite=20');
     // Uma resposta de uma digitação anterior não pode substituir a lista da
     // entrada atual nem apagar um município que o operador acabou de escolher.
-    if(document.getElementById(entradaId).value.trim()!==termo)return window[destino]||[];
-    window[destino]=r.municipios||[];
-    document.getElementById(listaId).innerHTML=window[destino].map(m=>'<option value="'+esc(m.rotulo)+'"></option>').join('');
-    return window[destino];
+    if(document.getElementById(entradaId).value.trim()!==termo)return null;
+    const sugestoes=r.municipios||[];
+    document.getElementById(listaId).innerHTML=sugestoes.map(m=>'<option value="'+esc(m.rotulo)+'"></option>').join('');
+    return sugestoes;
   }catch(e){return [];}
 }
 function textoMunicipio(valor){return String(valor||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();}
@@ -550,13 +550,19 @@ function selecionarMunicipio(entradaId,ibgeId,nomeId,sugestoes){
 }
 function selecionarMunicipioCadastro(){selecionarMunicipio('l_municipio','l_ibge','l_nome',_sugestoesLicenca);}
 function selecionarMunicipioTrial(){selecionarMunicipio('t_municipio','t_ibge',null,_sugestoesTrial);}
-function buscarMunicipioCadastro(){
+async function buscarMunicipioCadastro(){
   selecionarMunicipioCadastro();
-  buscarMunicipios('l_municipio','l_municipios_opcoes','_sugestoesLicenca').then(selecionarMunicipioCadastro);
+  const sugestoes=await buscarMunicipios('l_municipio','l_municipios_opcoes');
+  if(sugestoes===null)return;
+  _sugestoesLicenca=sugestoes;
+  selecionarMunicipioCadastro();
 }
-function buscarMunicipioTrial(){
+async function buscarMunicipioTrial(){
   selecionarMunicipioTrial();
-  buscarMunicipios('t_municipio','t_municipios_opcoes','_sugestoesTrial').then(selecionarMunicipioTrial);
+  const sugestoes=await buscarMunicipios('t_municipio','t_municipios_opcoes');
+  if(sugestoes===null)return;
+  _sugestoesTrial=sugestoes;
+  selecionarMunicipioTrial();
 }
 
 function renderMunicipiosTrial(){
