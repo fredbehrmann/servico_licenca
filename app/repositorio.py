@@ -69,6 +69,9 @@ class Repositorio(Protocol):
     def emitir_trial_se_elegivel(self, instalacao_id: str, codigo_ibge: str,
                                  agora: datetime, dias: int, dias_offline: int,
                                  versao_minima: str) -> Optional[dict[str, Any]]: ...
+    def associar_trial_admin(self, instalacao_id: str, codigo_ibge: str,
+                             agora: datetime, dias: int, dias_offline: int,
+                             versao_minima: str) -> dict[str, Any]: ...
     def converter_trial(self, licenca_id: str,
                         dados: dict[str, Any]) -> Optional[dict[str, Any]]: ...
     def registrar_auditoria_admin(self, operador: str, acao: str, alvo: str,
@@ -348,6 +351,75 @@ class RepositorioMemoria:
                 "quando": agora.isoformat(),
             })
             return {"licenca": dict(licenca), "instalacao": instalacao}
+
+    def associar_trial_admin(self, instalacao_id: str, codigo_ibge: str,
+                             agora: datetime, dias: int, dias_offline: int,
+                             versao_minima: str) -> dict[str, Any]:
+        """Cria o trial no primeiro vínculo manual e associa uma instalação."""
+        with self._lock:
+            municipio = self._municipios_trial.get(codigo_ibge)
+            if not municipio or not municipio.get("ativo"):
+                raise ValueError("município não está habilitado para avaliação")
+            abertas = [
+                reg for reg in self._licencas.values()
+                if reg.get("codigo_ibge") == codigo_ibge
+                and reg.get("status") in {"ativa", "suspensa", "pendente"}
+            ]
+            criada = False
+            if abertas:
+                licenca = abertas[0]
+                if licenca.get("plano") != "trial":
+                    raise ValueError("município possui licença contratual em aberto")
+                if licenca.get("status") != "ativa":
+                    raise ValueError("licença trial não está ativa")
+                fim = datetime.fromisoformat(str(licenca["expira_em"]))
+                if fim.tzinfo is None:
+                    fim = fim.replace(tzinfo=timezone.utc)
+                if agora >= fim:
+                    raise ValueError("licença trial do município está expirada")
+            else:
+                licenca_id = str(uuid4())
+                fim = agora + timedelta(days=dias)
+                licenca = {
+                    "licenca_id": licenca_id,
+                    "codigo_ibge": codigo_ibge,
+                    "nome_municipio": municipio["nome_municipio"],
+                    "status": "ativa",
+                    "inicio_em": agora.isoformat(),
+                    "expira_em": fim.isoformat(),
+                    "max_auditores": None,
+                    "max_instalacoes_ativas": int(municipio["max_instalacoes_trial"]),
+                    "dias_offline": dias_offline,
+                    "versao_minima": versao_minima,
+                    "criada_em": agora.isoformat(),
+                    "atualizada_em": agora.isoformat(),
+                    "plano": "trial",
+                }
+                self._licencas[licenca_id] = licenca
+                criada = True
+            outras = sum(
+                1 for iid, reg in self._inst.items()
+                if iid != instalacao_id
+                and reg.get("licenca_id") == licenca["licenca_id"]
+                and reg.get("status_instalacao") == "ativa"
+            )
+            if outras >= int(licenca["max_instalacoes_ativas"]):
+                if criada:
+                    self._licencas.pop(str(licenca["licenca_id"]), None)
+                raise ValueError("limite de instalações ativas da licença atingido")
+            instalacao = self.associar_instalacao(
+                instalacao_id, str(licenca["licenca_id"]), "ativa", agora,
+            )
+            self._eventos.append({
+                "licenca_id": licenca["licenca_id"],
+                "acao": "trial_associado_pelo_painel",
+                "detalhes": json.dumps({"instalacao_id": instalacao_id}, sort_keys=True),
+                "quando": agora.isoformat(),
+            })
+            return {
+                "licenca": dict(licenca), "instalacao": instalacao,
+                "licenca_criada": criada,
+            }
 
     def converter_trial(self, licenca_id: str,
                         dados: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -1151,6 +1223,78 @@ class RepositorioPostgres:
         return {
             "licenca": self.obter_licenca(licenca_id) or {},
             "instalacao": self.obter_instalacao(instalacao_id) or {},
+        }
+
+    def associar_trial_admin(self, instalacao_id: str, codigo_ibge: str,
+                             agora: datetime, dias: int, dias_offline: int,
+                             versao_minima: str) -> dict[str, Any]:
+        from sqlalchemy import text
+        criada = False
+        with self._engine.begin() as con:
+            con.execute(text("SELECT pg_advisory_xact_lock(hashtext(:i))"), {"i": instalacao_id})
+            con.execute(text("SELECT pg_advisory_xact_lock(hashtext(:c))"), {"c": codigo_ibge})
+            municipio = con.execute(text("""SELECT codigo_ibge, nome_municipio, uf,
+                max_instalacoes_trial FROM municipios_trial
+                WHERE codigo_ibge=:c AND ativo=TRUE FOR UPDATE"""), {
+                "c": codigo_ibge,
+            }).mappings().first()
+            if municipio is None:
+                raise ValueError("município não está habilitado para avaliação")
+            licenca = con.execute(text("""SELECT licenca_id, plano, status, expira_em,
+                max_instalacoes_ativas FROM licencas WHERE codigo_ibge=:c
+                AND status IN ('ativa','suspensa','pendente') FOR UPDATE"""), {
+                "c": codigo_ibge,
+            }).mappings().first()
+            if licenca is not None:
+                if licenca["plano"] != "trial":
+                    raise ValueError("município possui licença contratual em aberto")
+                if licenca["status"] != "ativa":
+                    raise ValueError("licença trial não está ativa")
+                if agora >= licenca["expira_em"]:
+                    raise ValueError("licença trial do município está expirada")
+                licenca_id = str(licenca["licenca_id"])
+                limite = int(licenca["max_instalacoes_ativas"])
+            else:
+                licenca_id = str(uuid4())
+                limite = int(municipio["max_instalacoes_trial"])
+                fim = agora + timedelta(days=dias)
+                con.execute(text("""INSERT INTO licencas (
+                    licenca_id, codigo_ibge, nome_municipio, status, inicio_em, expira_em,
+                    max_auditores, max_instalacoes_ativas, dias_offline, versao_minima,
+                    criada_em, atualizada_em, plano
+                ) VALUES (:l, :c, :n, 'ativa', :a, :f, NULL, :m, :d, :v, :a, :a, 'trial')"""), {
+                    "l": licenca_id, "c": codigo_ibge, "n": municipio["nome_municipio"],
+                    "a": agora, "f": fim, "m": limite, "d": dias_offline,
+                    "v": versao_minima,
+                })
+                criada = True
+            ativas = int(con.execute(text("""SELECT count(*) FROM instalacoes
+                WHERE licenca_id=:l AND status_instalacao='ativa' AND instalacao_id<>:i"""), {
+                "l": licenca_id, "i": instalacao_id,
+            }).scalar_one())
+            if ativas >= limite:
+                raise ValueError("limite de instalações ativas da licença atingido")
+            con.execute(text("""INSERT INTO instalacoes (
+                instalacao_id, codigo_ibge, max_usuarios, revogada, licenca_id,
+                status_instalacao, associada_em, ativada_em, revogada_em
+            ) VALUES (:i, :c, NULL, FALSE, :l, 'ativa', :a, :a, NULL)
+            ON CONFLICT (instalacao_id) DO UPDATE SET
+                codigo_ibge=EXCLUDED.codigo_ibge, max_usuarios=NULL, revogada=FALSE,
+                licenca_id=EXCLUDED.licenca_id, status_instalacao='ativa',
+                associada_em=EXCLUDED.associada_em, ativada_em=EXCLUDED.ativada_em,
+                revogada_em=NULL"""), {
+                "i": instalacao_id, "c": codigo_ibge, "l": licenca_id, "a": agora,
+            })
+            con.execute(text("""INSERT INTO eventos_licenca (licenca_id, acao, detalhes, quando)
+                VALUES (:l, 'trial_associado_pelo_painel', :d, :a)"""), {
+                "l": licenca_id,
+                "d": json.dumps({"instalacao_id": instalacao_id}, sort_keys=True),
+                "a": agora,
+            })
+        return {
+            "licenca": self.obter_licenca(licenca_id) or {},
+            "instalacao": self.obter_instalacao(instalacao_id) or {},
+            "licenca_criada": criada,
         }
 
     def converter_trial(self, licenca_id: str,

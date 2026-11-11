@@ -190,15 +190,20 @@ O `nonce` não é persistido, pois existe somente para impedir a reutilização 
 ## Versão de avaliação
 
 O trial é opt-in em duas camadas: `LICENCA_TRIAL_ATIVO=true` no serviço e município habilitado no
-painel. Somente a primeira consulta de uma **instalação desconhecida**, com SICOF compatível e
-município oficial habilitado, pode criar a licença de 30 dias. A criação da licença, o consumo do
-limite municipal e a associação da instalação acontecem na mesma transação.
+painel. A licença de 30 dias pode ser criada pela primeira consulta de uma **instalação
+desconhecida**, com SICOF compatível, ou pela associação manual no painel. Na associação manual,
+o município habilitado aparece no seletor mesmo antes de existir uma licença ou usuário vinculado;
+a vigência começa no momento dessa primeira associação. A criação da licença, o consumo do limite
+municipal e a associação da instalação acontecem na mesma transação.
 
 Instalações já conhecidas continuam exatamente no modelo atual, inclusive registros legados e
-licenças contratadas. Elas nunca são migradas para trial durante uma consulta. Clientes anteriores
-à versão mínima não recebem o novo campo `plano` e não podem iniciar avaliação. Código IBGE vazio
-ou inválido continua sendo erro 400. Desabilitar um município ou a chave geral não revoga trials já
-emitidos; cada um continua válido até `expira_em`.
+licenças contratadas. Elas nunca são migradas para trial durante uma consulta, mas o operador pode
+associá-las explicitamente pelo painel, com confirmação quando houver troca de licença. Um trial já
+emitido também aceita novas associações manuais até o limite configurado. Clientes anteriores à
+versão mínima não recebem o novo campo `plano` e não podem iniciar avaliação. Código IBGE vazio ou
+inválido continua sendo erro 400. Desabilitar um município ou a chave geral não revoga trials já
+emitidos; cada um continua válido até `expira_em`, embora novas associações fiquem bloqueadas pela
+chave geral.
 
 O cadastro contratual e a habilitação trial usam o mesmo catálogo embarcado de 5.571 municípios.
 O operador pode digitar nome ou código, e o autocomplete mostra nome, UF e código IBGE. Converter

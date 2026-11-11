@@ -590,7 +590,7 @@ async function alterarMunicipioTrial(codigoCod,ativo,maximo){
 function renderLicencas(){
   const tb=document.getElementById('tab-lic'); tb.innerHTML='';
   const sel=document.getElementById('v_lic'); sel.innerHTML='<option value="">selecione</option>';
-  if(!_licencas.length){ tb.innerHTML='<tr><td colspan="7" class="vazio">Nenhuma licença contratual.</td></tr>'; return; }
+  if(!_licencas.length)tb.innerHTML='<tr><td colspan="7" class="vazio">Nenhuma licença contratual.</td></tr>';
   for(const l of _licencas){
     const id=arg(l.licenca_id);
     const op=document.createElement('option'); op.value=l.licenca_id;
@@ -609,6 +609,15 @@ function renderLicencas(){
       '<td>'+(l.max_auditores==null?'sem limite':esc(l.max_auditores))+'</td><td>'+esc(l.instalacoes_ativas)+' / '+esc(l.max_instalacoes_ativas)+'</td>'+
       '<td>'+acoes+'</td>';
     tb.appendChild(tr);
+  }
+  const municipiosComLicencaAberta=new Set(_licencas
+    .filter(l=>['ativa','suspensa','pendente'].includes(String(l.status)))
+    .map(l=>String(l.codigo_ibge)));
+  for(const m of _municipiosTrial){
+    if(!m.ativo||municipiosComLicencaAberta.has(String(m.codigo_ibge)))continue;
+    const op=document.createElement('option');op.value='trial:'+m.codigo_ibge;
+    op.textContent=m.nome_municipio+' — '+m.codigo_ibge+' — trial (criar ao associar)';
+    sel.appendChild(op);
   }
 }
 
@@ -772,12 +781,16 @@ async function associarInstalacao(){
   const lid=document.getElementById('v_lic').value; const iid=document.getElementById('v_inst').value.trim();
   const status=document.getElementById('v_status').value;
   if(!lid||!iid){ aviso('Selecione a licença e informe o identificador da instalação.',false); return; }
+  const trialVirtual=lid.startsWith('trial:');
+  const codigoTrial=trialVirtual?lid.slice(6):'';
+  if(trialVirtual&&status!=='ativa'){ aviso('A associação inicial de um trial deve usar o estado ativa.',false); return; }
   const existente=_instalacoes.find(i=>String(i.instalacao_id)===iid);
-  const transferencia=!!(existente&&existente.licenca_id&&String(existente.licenca_id)!==String(lid));
+  const transferencia=!!(existente&&(trialVirtual||
+    (existente.licenca_id&&String(existente.licenca_id)!==String(lid))));
   const corpo={instalacao_id:iid,status};
   if(transferencia){
     const anterior=_licencas.find(l=>String(l.licenca_id)===String(existente.licenca_id));
-    const municipio=anterior&&anterior.codigo_ibge ? anterior.codigo_ibge : existente.codigo_ibge;
+    const municipio=anterior&&anterior.codigo_ibge ? anterior.codigo_ibge : (existente.codigo_ibge||codigoTrial);
     const fim=dataBrasileira(anterior&&anterior.expira_em);
     const mensagem='Esta instalação já está associada à licença do município '+municipio+'.\\n\\n'+
       'A licença anterior continua válida até '+fim+'.\\n\\n'+
@@ -785,7 +798,10 @@ async function associarInstalacao(){
     if(!confirm(mensagem))return;
     corpo.confirmar_transferencia=true;
   }else if(!confirm('Associar a instalação como '+status+'?'))return;
-  try{ await chamar('POST','/admin/licencas/'+encodeURIComponent(lid)+'/instalacoes',corpo);
+  const url=trialVirtual
+    ? '/admin/municipios-trial/'+encodeURIComponent(codigoTrial)+'/instalacoes'
+    : '/admin/licencas/'+encodeURIComponent(lid)+'/instalacoes';
+  try{ await chamar('POST',url,corpo);
     aviso(transferencia?'Instalação transferida para a nova licença.':'Instalação associada.',true); carregar(); }catch(e){}
 }
 async function verHistorico(idCod){

@@ -1183,6 +1183,76 @@ async def atualizar_licenca(licenca_id: str, request: Request) -> dict[str, Any]
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@app.post(
+    "/admin/municipios-trial/{codigo_ibge}/instalacoes",
+    dependencies=[Depends(exigir_admin)],
+)
+async def associar_instalacao_trial(
+    codigo_ibge: str, request: Request,
+) -> dict[str, Any]:
+    """Cria o trial no primeiro vínculo manual e associa a instalação."""
+    try:
+        if not estado.cfg.trial_ativo:
+            raise HTTPException(
+                status_code=409,
+                detail="a emissão de licenças trial está desabilitada neste ambiente",
+            )
+        codigo = _entrada_admin(validacao.codigo_ibge, codigo_ibge)
+        corpo = await _ler_objeto_json(request, limite=validacao.MAX_CORPO_ADMIN)
+        vinculo = licencas.normalizar_instalacao(corpo)
+        if vinculo["status"] != "ativa":
+            raise licencas.LicencaInvalida(
+                "a associação inicial de uma licença trial deve usar o estado ativa"
+            )
+        anterior = estado.repo.obter_instalacao(vinculo["instalacao_id"])
+        trial_existente = next((
+            item for item in estado.repo.listar_licencas()
+            if str(item.get("codigo_ibge") or "") == codigo
+            and item.get("plano") == "trial"
+            and item.get("status") in {"ativa", "suspensa", "pendente"}
+        ), None)
+        destino_id = str((trial_existente or {}).get("licenca_id") or "")
+        anterior_id = str((anterior or {}).get("licenca_id") or "")
+        transferencia = bool(anterior and (not destino_id or anterior_id != destino_id))
+        if transferencia and not vinculo["confirmar_transferencia"]:
+            licenca_anterior = estado.repo.obter_licenca(anterior_id) if anterior_id else None
+            fim_anterior = str((licenca_anterior or {}).get("expira_em") or "não informada")
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "a instalação já possui um cadastro; a licença anterior continua "
+                    f"válida até {fim_anterior}. Envie confirmar_transferencia=true "
+                    "para confirmar a associação ao trial"
+                ),
+            )
+        agora = datetime.now(timezone.utc)
+        resultado = estado.repo.associar_trial_admin(
+            vinculo["instalacao_id"], codigo, agora,
+            estado.cfg.trial_dias, estado.cfg.trial_dias_offline,
+            estado.cfg.versao_trial_minima,
+        )
+        nova_id = str(resultado["licenca"]["licenca_id"])
+        if transferencia and anterior_id and anterior_id != nova_id:
+            estado.repo.registrar_evento_licenca(
+                anterior_id,
+                "instalacao_transferida_saida",
+                json.dumps({
+                    "instalacao_id": vinculo["instalacao_id"],
+                    "status": "ativa",
+                    "licenca_destino_id": nova_id,
+                }, ensure_ascii=False, sort_keys=True),
+                agora,
+            )
+        return {
+            "ok": True,
+            **resultado,
+            "transferida": transferencia,
+            "licenca_anterior_id": anterior_id or None,
+        }
+    except (licencas.LicencaInvalida, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.post("/admin/licencas/{licenca_id}/instalacoes", dependencies=[Depends(exigir_admin)])
 async def associar_instalacao(licenca_id: str, request: Request) -> dict[str, Any]:
     try:
@@ -1193,12 +1263,17 @@ async def associar_instalacao(licenca_id: str, request: Request) -> dict[str, An
         destino = estado.repo.obter_licenca(licenca_id)
         if destino is None:
             raise HTTPException(status_code=404, detail="licença não encontrada")
-        if (destino.get("plano") == "trial"
-                and str((anterior or {}).get("licenca_id") or "") != licenca_id):
-            raise HTTPException(
-                status_code=409,
-                detail="instalações trial são associadas somente pela primeira consulta elegível",
-            )
+        agora = datetime.now(timezone.utc)
+        if destino.get("plano") == "trial":
+            if not estado.cfg.trial_ativo:
+                raise HTTPException(
+                    status_code=409,
+                    detail="a associação de instalações trial está desabilitada neste ambiente",
+                )
+            if destino.get("status") != "ativa":
+                raise HTTPException(status_code=409, detail="licença trial não está ativa")
+            if agora >= licencas.parse_data(destino.get("expira_em"), "expira_em"):
+                raise HTTPException(status_code=409, detail="licença trial está expirada")
         licenca_anterior_id = str((anterior or {}).get("licenca_id") or "")
         transferencia = bool(licenca_anterior_id and licenca_anterior_id != licenca_id)
         if transferencia and not vinculo["confirmar_transferencia"]:
@@ -1212,7 +1287,6 @@ async def associar_instalacao(licenca_id: str, request: Request) -> dict[str, An
                     "confirmar_transferencia=true para confirmar a alteração"
                 ),
             )
-        agora = datetime.now(timezone.utc)
         instalacao = estado.repo.associar_instalacao(
             vinculo["instalacao_id"], licenca_id, vinculo["status"], agora
         )

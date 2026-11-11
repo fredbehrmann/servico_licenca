@@ -275,7 +275,8 @@ def test_painel_expoe_operacoes_contratuais(cliente):
         "Nome do município", "Consultar instalações de uma licença",
         "Data e hora", "f_licenca", "f_municipio", "f_estado",
         "_porPaginaRelacionamentos = 10", "verInstalacoesMunicipio",
-        "ultima_versao_app",
+        "ultima_versao_app", "trial (criar ao associar)",
+        "/admin/municipios-trial/",
     ):
         assert trecho in texto
     assert "A licença anterior continua válida até" in texto

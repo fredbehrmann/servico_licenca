@@ -174,9 +174,9 @@ def test_conversao_preserva_licenca_e_instalacao(cliente):
     assert resposta["plano"] == "contratado" and resposta["max_usuarios"] == 8
 
 
-def test_trial_nao_aceita_associacao_manual_de_instalacao_conhecida(cliente):
+def test_trial_aceita_associacao_manual_de_instalacao_conhecida(cliente):
     c, _, main = cliente
-    _habilitar_trial(c, main)
+    _habilitar_trial(c, main, maximo=2)
     c.post("/v1/consulta", json=_consulta(INSTALACAO_1))
     licenca_id = main.estado.repo.obter_instalacao(INSTALACAO_1)["licenca_id"]
     main.estado.repo.autorizar(INSTALACAO_2, "3550308", 3)
@@ -190,8 +190,53 @@ def test_trial_nao_aceita_associacao_manual_de_instalacao_conhecida(cliente):
         },
     )
 
-    assert resposta.status_code == 409
-    assert main.estado.repo.obter_instalacao(INSTALACAO_2)["licenca_id"] is None
+    assert resposta.status_code == 200
+    assert main.estado.repo.obter_instalacao(INSTALACAO_2)["licenca_id"] == licenca_id
+
+
+def test_painel_cria_trial_ao_associar_primeira_instalacao(cliente):
+    c, _, main = cliente
+    _habilitar_trial(c, main)
+
+    assert main.estado.repo.listar_licencas() == []
+    resposta = c.post(
+        f"/admin/municipios-trial/{_IBGE}/instalacoes", headers=_H,
+        json={"instalacao_id": INSTALACAO_1, "status": "ativa"},
+    )
+
+    assert resposta.status_code == 200
+    corpo = resposta.json()
+    assert corpo["licenca_criada"] is True
+    assert corpo["licenca"]["plano"] == "trial"
+    assert corpo["instalacao"]["licenca_id"] == corpo["licenca"]["licenca_id"]
+    inicio = datetime.fromisoformat(corpo["licenca"]["inicio_em"])
+    fim = datetime.fromisoformat(corpo["licenca"]["expira_em"])
+    assert fim - inicio == timedelta(days=30)
+
+
+def test_associacao_manual_trial_exige_confirmacao_para_instalacao_existente(cliente):
+    c, _, main = cliente
+    _habilitar_trial(c, main)
+    main.estado.repo.autorizar(INSTALACAO_2, "3550308", 3)
+
+    sem_confirmacao = c.post(
+        f"/admin/municipios-trial/{_IBGE}/instalacoes", headers=_H,
+        json={"instalacao_id": INSTALACAO_2, "status": "ativa"},
+    )
+    confirmada = c.post(
+        f"/admin/municipios-trial/{_IBGE}/instalacoes", headers=_H,
+        json={
+            "instalacao_id": INSTALACAO_2,
+            "status": "ativa",
+            "confirmar_transferencia": True,
+        },
+    )
+
+    assert sem_confirmacao.status_code == 409
+    assert "continua válida" in sem_confirmacao.json()["detail"]
+    assert confirmada.status_code == 200
+    assert confirmada.json()["licenca_criada"] is True
+    assert main.estado.repo.obter_instalacao(INSTALACAO_2)["licenca_id"]
 
 
 def test_consulta_de_suporte_reune_plano_datas_e_municipio(cliente):

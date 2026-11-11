@@ -207,6 +207,38 @@ def test_postgres_emite_e_converte_trial_atomicamente(banco_postgres):
         repo._engine.dispose()
 
 
+def test_postgres_cria_trial_na_primeira_associacao_administrativa(banco_postgres):
+    url = banco_postgres()
+    repo = RepositorioPostgres(url)
+    instalacao_id = str(uuid.uuid4())
+    try:
+        repo.configurar_municipio_trial({
+            "codigo_ibge": _IBGE,
+            "nome_municipio": "Salvador",
+            "uf": "BA",
+            "ativo": True,
+            "max_instalacoes_trial": 1,
+            "atualizado_em": _AGORA,
+        })
+
+        associada = repo.associar_trial_admin(
+            instalacao_id, _IBGE, _AGORA, 30, 2, "1.0.12",
+        )
+
+        assert associada["licenca_criada"] is True
+        assert associada["licenca"]["plano"] == "trial"
+        assert associada["instalacao"]["licenca_id"] == associada["licenca"]["licenca_id"]
+        inicio = datetime.fromisoformat(associada["licenca"]["inicio_em"])
+        fim = datetime.fromisoformat(associada["licenca"]["expira_em"])
+        assert fim - inicio == timedelta(days=30)
+        with pytest.raises(ValueError, match="limite de instalações"):
+            repo.associar_trial_admin(
+                str(uuid.uuid4()), _IBGE, _AGORA, 30, 2, "1.0.12",
+            )
+    finally:
+        repo._engine.dispose()
+
+
 def test_postgres_transfere_instalacao_ativa_para_licenca_de_outro_municipio(
     banco_postgres,
 ):
