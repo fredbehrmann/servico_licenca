@@ -50,7 +50,7 @@ class Repositorio(Protocol):
     def listar_instalacoes(self) -> list[dict[str, Any]]: ...
     def listar_municipios_revogados(self) -> list[str]: ...
     def registrar_tentativa(self, instalacao_id: str, codigo_ibge: str,
-                            status: str, quando: datetime) -> None: ...
+                            versao_app: str, status: str, quando: datetime) -> None: ...
     def listar_tentativas(self, limite: int = 100) -> list[dict[str, Any]]: ...
     def criar_licenca(self, dados: dict[str, Any]) -> dict[str, Any]: ...
     def obter_licenca(self, licenca_id: str) -> Optional[dict[str, Any]]: ...
@@ -133,6 +133,7 @@ class RepositorioMemoria:
                 "revogada": False,
                 "licenca_id": None,
                 "status_instalacao": None,
+                "ultima_versao_app": atual.get("ultima_versao_app"),
                 "criada_em": atual.get("criada_em") or datetime.now(timezone.utc).isoformat(),
             }
 
@@ -161,15 +162,16 @@ class RepositorioMemoria:
     def listar_municipios_revogados(self) -> list[str]:
         return sorted(self._munic_revogados)
 
-    def registrar_tentativa(self, instalacao_id, codigo_ibge, status, quando) -> None:
-        # Sem dado pessoal: só identificador de instalação, município, status, horário.
+    def registrar_tentativa(self, instalacao_id, codigo_ibge, versao_app, status, quando) -> None:
+        # Sem dado pessoal: identificador, município, versão, status e horário.
         self.tentativas.append({
             "instalacao_id": instalacao_id, "codigo_ibge": codigo_ibge,
-            "status": status, "quando": quando.isoformat(),
+            "versao_app": versao_app, "status": status, "quando": quando.isoformat(),
         })
         with self._lock:
             if instalacao_id in self._inst:
                 self._inst[instalacao_id]["ultima_consulta_em"] = quando.isoformat()
+                self._inst[instalacao_id]["ultima_versao_app"] = versao_app
 
     def listar_tentativas(self, limite: int = 100) -> list[dict[str, Any]]:
         return list(reversed(self.tentativas))[: max(1, int(limite))]
@@ -239,6 +241,7 @@ class RepositorioMemoria:
                 "ativada_em": quando.isoformat() if status == "ativa" else None,
                 "revogada_em": quando.isoformat() if status in {"revogada", "substituida"} else None,
                 "ultima_consulta_em": (atual or {}).get("ultima_consulta_em"),
+                "ultima_versao_app": (atual or {}).get("ultima_versao_app"),
                 "criada_em": (atual or {}).get("criada_em") or quando.isoformat(),
             }
             self._inst[instalacao_id] = reg
@@ -663,7 +666,7 @@ class RepositorioPostgres:
             row = con.execute(
                 text("SELECT instalacao_id, codigo_ibge, max_usuarios, revogada, "
                      "licenca_id, status_instalacao, associada_em, ativada_em, "
-                     "revogada_em, ultima_consulta_em, criada_em "
+                     "revogada_em, ultima_consulta_em, ultima_versao_app, criada_em "
                      "FROM instalacoes WHERE instalacao_id = :i"),
                 {"i": instalacao_id},
             ).mappings().first()
@@ -732,7 +735,7 @@ class RepositorioPostgres:
             rows = con.execute(
                 text("SELECT instalacao_id, codigo_ibge, max_usuarios, revogada, "
                      "licenca_id, status_instalacao, associada_em, ativada_em, "
-                     "revogada_em, ultima_consulta_em, criada_em "
+                     "revogada_em, ultima_consulta_em, ultima_versao_app, criada_em "
                      "FROM instalacoes ORDER BY criada_em")
             ).mappings().all()
         return [dict(r) for r in rows]
@@ -745,24 +748,27 @@ class RepositorioPostgres:
             ).all()
         return [r[0] for r in rows]
 
-    def registrar_tentativa(self, instalacao_id, codigo_ibge, status, quando) -> None:
+    def registrar_tentativa(self, instalacao_id, codigo_ibge, versao_app, status, quando) -> None:
         from sqlalchemy import text
         with self._engine.begin() as con:
             con.execute(
-                text("INSERT INTO tentativas (instalacao_id, codigo_ibge, status, quando) "
-                     "VALUES (:i, :c, :s, :q)"),
-                {"i": instalacao_id, "c": codigo_ibge, "s": status, "q": quando},
+                text("INSERT INTO tentativas "
+                     "(instalacao_id, codigo_ibge, versao_app, status, quando) "
+                     "VALUES (:i, :c, :v, :s, :q)"),
+                {"i": instalacao_id, "c": codigo_ibge, "v": versao_app,
+                 "s": status, "q": quando},
             )
             con.execute(
-                text("UPDATE instalacoes SET ultima_consulta_em = :q WHERE instalacao_id = :i"),
-                {"i": instalacao_id, "q": quando},
+                text("UPDATE instalacoes SET ultima_consulta_em = :q, ultima_versao_app = :v "
+                     "WHERE instalacao_id = :i"),
+                {"i": instalacao_id, "q": quando, "v": versao_app},
             )
 
     def listar_tentativas(self, limite: int = 100) -> list[dict[str, Any]]:
         from sqlalchemy import text
         with self._engine.connect() as con:
             rows = con.execute(
-                text("SELECT instalacao_id, codigo_ibge, status, quando "
+                text("SELECT instalacao_id, codigo_ibge, versao_app, status, quando "
                      "FROM tentativas ORDER BY quando DESC LIMIT :n"),
                 {"n": max(1, int(limite))},
             ).mappings().all()

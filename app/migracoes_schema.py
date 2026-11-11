@@ -170,6 +170,10 @@ MIGRACOES = (
         "CREATE INDEX IF NOT EXISTS ix_licencas_plano_status ON licencas(plano, status)",
         "CREATE INDEX IF NOT EXISTS ix_municipios_trial_ativo ON municipios_trial(ativo)",
     )),
+    MigracaoSchema(8, "versao_das_consultas_e_instalacoes", (
+        "ALTER TABLE tentativas ADD COLUMN IF NOT EXISTS versao_app TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE instalacoes ADD COLUMN IF NOT EXISTS ultima_versao_app TEXT",
+    )),
 )
 
 

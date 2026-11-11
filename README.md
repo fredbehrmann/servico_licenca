@@ -182,7 +182,10 @@ sem `confirmar_transferencia: true`, evitando alterações silenciosas fora do p
 
 O painel apresenta os relacionamentos entre licenças e instalações, com filtros por licença,
 município e estado. A listagem mostra até dez vínculos por página e usa a data da associação ou da
-alteração mais recente do vínculo.
+alteração mais recente do vínculo. Em municípios habilitados para avaliação, **Ver instalações**
+abre diretamente os vínculos daquele município. Cada consulta preserva também a versão do SICOF;
+o painel exibe a última versão observada, a data do cadastro e a última consulta da instalação.
+O `nonce` não é persistido, pois existe somente para impedir a reutilização de respostas.
 
 ## Versão de avaliação
 

@@ -22,7 +22,10 @@ def test_tentativas_aparecem_apos_consulta(cliente):
     req = {"instalacao_id": INSTALACAO_2, "codigo_ibge": "2927408", "versao_app": "1.0.0", "nonce": "n9"}
     assert c.post("/v1/consulta", json=req).status_code == 200
     lst = c.get("/admin/tentativas", headers=_H).json()["tentativas"]
-    assert any(t["instalacao_id"] == INSTALACAO_2 for t in lst)
+    assert any(
+        t["instalacao_id"] == INSTALACAO_2 and t["versao_app"] == "1.0.0"
+        for t in lst
+    )
 
 
 def test_pagina_admin_tem_logo_e_consultas(cliente):
@@ -33,6 +36,8 @@ def test_pagina_admin_tem_logo_e_consultas(cliente):
     assert "Administração de licenças" in r.text
     assert "data:image/png;base64," in r.text   # logo do TechFisco embutida
     assert "<th>IBGE</th>" in r.text            # vínculo municipal visível na listagem
+    assert "Ver instalações" in r.text
+    assert "ultima_versao_app" in r.text
 
 
 def test_admin_sem_token_401(cliente):

@@ -145,8 +145,8 @@ def test_retencao_remove_registros_antigos_e_preserva_recentes():
     repo = RepositorioMemoria()
     agora = datetime.now(timezone.utc)
     antigo = agora - timedelta(days=800)
-    repo.registrar_tentativa("i-antiga", "2927408", "ativa", antigo)
-    repo.registrar_tentativa("i-recente", "2927408", "ativa", agora)
+    repo.registrar_tentativa("i-antiga", "2927408", "1.0.0", "ativa", antigo)
+    repo.registrar_tentativa("i-recente", "2927408", "1.0.12", "ativa", agora)
     repo.registrar_auditoria_admin("fred", "POST", "/admin/x", "200", "", antigo)
     repo.registrar_auditoria_admin("fred", "POST", "/admin/y", "200", "", agora)
 
@@ -155,4 +155,5 @@ def test_retencao_remove_registros_antigos_e_preserva_recentes():
     assert removidos["tentativas"] == 1
     assert removidos["auditoria_admin"] == 1
     assert repo.listar_tentativas()[0]["instalacao_id"] == "i-recente"
+    assert repo.listar_tentativas()[0]["versao_app"] == "1.0.12"
     assert repo.listar_auditoria_admin()[0]["alvo"] == "/admin/y"

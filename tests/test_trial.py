@@ -207,4 +207,5 @@ def test_consulta_de_suporte_reune_plano_datas_e_municipio(cliente):
     registro = resposta.json()["instalacoes"][0]
     assert registro["plano"] == "trial"
     assert registro["nome_municipio"] == "Salvador"
+    assert registro["ultima_versao_app"] == "1.0.12"
     assert registro["criada_em"] and registro["ultima_consulta_em"]

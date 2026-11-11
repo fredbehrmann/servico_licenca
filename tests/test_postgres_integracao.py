@@ -282,7 +282,7 @@ def test_postgres_consultas_e_relatorios_administrativos(banco_postgres):
     licenca = repo.criar_licenca(_licenca())
     instalacao_id = str(uuid.uuid4())
     repo.associar_instalacao(instalacao_id, licenca["licenca_id"], "ativa", _AGORA)
-    repo.registrar_tentativa(instalacao_id, _IBGE, "ativa", _AGORA)
+    repo.registrar_tentativa(instalacao_id, _IBGE, "1.0.12", "ativa", _AGORA)
     repo.registrar_evento_licenca(
         licenca["licenca_id"], "licenca_criada", json.dumps({"origem": "teste"}), _AGORA,
     )
@@ -292,7 +292,9 @@ def test_postgres_consultas_e_relatorios_administrativos(banco_postgres):
     try:
         assert repo.listar_licencas()[0]["instalacoes_ativas"] == 1
         assert repo.listar_instalacoes()[0]["instalacao_id"] == instalacao_id
+        assert repo.listar_instalacoes()[0]["ultima_versao_app"] == "1.0.12"
         assert repo.listar_tentativas()[0]["status"] == "ativa"
+        assert repo.listar_tentativas()[0]["versao_app"] == "1.0.12"
         assert repo.listar_eventos_licenca(licenca["licenca_id"])[0]["acao"] == "licenca_criada"
         assert repo.listar_auditoria_admin()[0]["operador"] == "fred"
     finally:

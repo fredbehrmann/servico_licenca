@@ -185,8 +185,8 @@ _TEMPLATE = """<!doctype html>
         <div style="flex:0;align-self:flex-end"><button onclick="habilitarMunicipioTrial()">Habilitar</button></div>
       </div>
       <div class="tabela-scroll"><table style="margin-top:12px">
-        <thead><tr><th>Município</th><th>UF</th><th>IBGE</th><th>Estado</th><th>Máx.</th><th></th></tr></thead>
-        <tbody id="tab-trial"><tr><td colspan="6" class="vazio">Nenhum município habilitado.</td></tr></tbody>
+        <thead><tr><th>Município</th><th>UF</th><th>IBGE</th><th>Estado</th><th>Máx.</th><th>Instalações</th><th></th></tr></thead>
+        <tbody id="tab-trial"><tr><td colspan="7" class="vazio">Nenhum município habilitado.</td></tr></tbody>
       </table></div>
     </div>
 
@@ -198,7 +198,7 @@ _TEMPLATE = """<!doctype html>
       </table></div>
     </div>
 
-    <div class="cartao">
+    <div class="cartao" id="box-relacionamentos">
       <h2>Associar instalação à licença</h2>
       <div class="linha">
         <div><label>Licença</label><select id="v_lic"><option value="">selecione</option></select></div>
@@ -221,8 +221,8 @@ _TEMPLATE = """<!doctype html>
       </div>
       <div id="resumo-relacionamentos" class="consulta-resumo"></div>
       <div class="tabela-scroll"><table>
-        <thead><tr><th>Município</th><th>Licença</th><th>Instalação</th><th>Estado</th><th>Data e hora</th></tr></thead>
-        <tbody id="tab-rel"><tr><td colspan="5" class="vazio">Nenhum relacionamento cadastrado.</td></tr></tbody>
+        <thead><tr><th>Município</th><th>Licença</th><th>Instalação</th><th>Versão</th><th>Estado</th><th>Data e hora<br>cadastro / última consulta</th></tr></thead>
+        <tbody id="tab-rel"><tr><td colspan="6" class="vazio">Nenhum relacionamento cadastrado.</td></tr></tbody>
       </table></div>
       <div class="paginacao">
         <button id="rel-anterior" class="sec peq" onclick="mudarPaginaRelacionamentos(-1)">Anterior</button>
@@ -244,8 +244,8 @@ _TEMPLATE = """<!doctype html>
     <div class="cartao">
       <h2>Instalações <span class="dir"><input id="busca" placeholder="filtrar por UUID ou IBGE" style="width:220px" oninput="renderInstalacoes()"></span></h2>
       <div class="tabela-scroll"><table>
-        <thead><tr><th>instalacao_id</th><th>Município / IBGE</th><th>Licença / plano</th><th>Estado</th><th>Criada / última consulta</th><th></th></tr></thead>
-        <tbody id="tab-inst"><tr><td colspan="6" class="vazio">Entre com o token para carregar.</td></tr></tbody>
+        <thead><tr><th>instalacao_id</th><th>Município / IBGE</th><th>Licença / plano</th><th>Versão</th><th>Estado</th><th>Criada / última consulta</th><th></th></tr></thead>
+        <tbody id="tab-inst"><tr><td colspan="7" class="vazio">Entre com o token para carregar.</td></tr></tbody>
       </table>
       </div>
     </div>
@@ -265,10 +265,10 @@ _TEMPLATE = """<!doctype html>
     <div class="cartao">
       <h2>Consultas recentes <span class="dir"><button class="sec peq" onclick="carregar()">atualizar</button></span></h2>
       <table>
-        <thead><tr><th>quando</th><th>instalacao_id</th><th>IBGE</th><th>resposta</th></tr></thead>
-        <tbody id="tab-tent"><tr><td colspan="4" class="vazio">Sem consultas registradas ainda.</td></tr></tbody>
+        <thead><tr><th>quando</th><th>instalacao_id</th><th>IBGE</th><th>Versão</th><th>resposta</th></tr></thead>
+        <tbody id="tab-tent"><tr><td colspan="5" class="vazio">Sem consultas registradas ainda.</td></tr></tbody>
       </table>
-      <div class="rodape" style="text-align:left;margin:10px 0 0">O serviço registra cada consulta (sem dado pessoal): identificador, município, horário e resposta.</div>
+      <div class="rodape" style="text-align:left;margin:10px 0 0">O serviço registra cada consulta (sem dado pessoal): identificador, município, versão, horário e resposta.</div>
     </div>
     </section>
 
@@ -567,10 +567,11 @@ async function buscarMunicipioTrial(){
 
 function renderMunicipiosTrial(){
   const tb=document.getElementById('tab-trial');tb.innerHTML='';
-  if(!_municipiosTrial.length){tb.innerHTML='<tr><td colspan="6" class="vazio">Nenhum município habilitado.</td></tr>';return;}
+  if(!_municipiosTrial.length){tb.innerHTML='<tr><td colspan="7" class="vazio">Nenhum município habilitado.</td></tr>';return;}
   for(const m of _municipiosTrial){
+    const quantidade=_instalacoes.filter(i=>String(i.codigo_ibge)===String(m.codigo_ibge)).length;
     const tr=document.createElement('tr');
-    tr.innerHTML='<td>'+esc(m.nome_municipio)+'</td><td>'+esc(m.uf)+'</td><td>'+esc(m.codigo_ibge)+'</td><td>'+tagStatus(m.ativo?'ativa':'suspensa')+'</td><td>'+esc(m.max_instalacoes_trial)+'</td><td><button class="'+(m.ativo?'perigo ':'sec ')+'peq" onclick="alterarMunicipioTrial(\\''+arg(m.codigo_ibge)+'\\','+(!m.ativo)+','+m.max_instalacoes_trial+')">'+(m.ativo?'Desabilitar':'Habilitar')+'</button></td>';
+    tr.innerHTML='<td>'+esc(m.nome_municipio)+'</td><td>'+esc(m.uf)+'</td><td>'+esc(m.codigo_ibge)+'</td><td>'+tagStatus(m.ativo?'ativa':'suspensa')+'</td><td>'+esc(m.max_instalacoes_trial)+'</td><td>'+esc(quantidade)+'</td><td><button class="sec peq" onclick="verInstalacoesMunicipio(\\''+arg(m.codigo_ibge)+'\\')">Ver instalações</button> <button class="'+(m.ativo?'perigo ':'sec ')+'peq" onclick="alterarMunicipioTrial(\\''+arg(m.codigo_ibge)+'\\','+(!m.ativo)+','+m.max_instalacoes_trial+')">'+(m.ativo?'Desabilitar':'Habilitar')+'</button></td>';
     tb.appendChild(tr);
   }
 }
@@ -626,6 +627,11 @@ function popularFiltrosRelacionamentos(){
     const atual=municipios.get(l.codigo_ibge);
     if(!atual||(!atual.nome_municipio&&l.nome_municipio))municipios.set(l.codigo_ibge,l);
   }
+  for(const m of _municipiosTrial){
+    if(!municipios.has(m.codigo_ibge))municipios.set(m.codigo_ibge,{
+      codigo_ibge:m.codigo_ibge,nome_municipio:m.nome_municipio
+    });
+  }
   filtroMunicipio.innerHTML='<option value="">Todos</option>';
   for(const l of [...municipios.values()].sort((a,b)=>nomeMunicipio(a).localeCompare(nomeMunicipio(b),'pt-BR'))){
     const op=document.createElement('option');
@@ -678,14 +684,15 @@ function renderRelacionamentos(reiniciar){
   const pagina=relacionamentos.slice(inicio,inicio+_porPaginaRelacionamentos);
   const tb=document.getElementById('tab-rel'); tb.innerHTML='';
   if(!pagina.length){
-    tb.innerHTML='<tr><td colspan="5" class="vazio">Nenhum relacionamento corresponde aos filtros.</td></tr>';
+    tb.innerHTML='<tr><td colspan="6" class="vazio">Nenhum relacionamento corresponde aos filtros.</td></tr>';
   }else{
     for(const i of pagina){
       const l=_licencas.find(item=>String(item.licenca_id)===String(i.licenca_id));
       const tr=document.createElement('tr');
       tr.innerHTML='<td>'+esc(nomeMunicipio(l))+'<br><span class="cod">'+esc(i.codigo_ibge)+'</span></td>'+
         '<td class="cod">'+esc(i.licenca_id)+'</td><td class="cod">'+esc(i.instalacao_id)+'</td>'+
-        '<td>'+tagStatus(estadoDaInstalacao(i))+'</td><td>'+esc(quando(i.associada_em))+'</td>';
+        '<td>'+esc(i.ultima_versao_app||'—')+'</td><td>'+tagStatus(estadoDaInstalacao(i))+'</td>'+
+        '<td>'+esc(quando(i.criada_em))+'<br>'+esc(quando(i.ultima_consulta_em))+'</td>';
       tb.appendChild(tr);
     }
   }
@@ -704,6 +711,14 @@ function limparFiltrosRelacionamentos(){
   document.getElementById('f_municipio').value='';
   document.getElementById('f_estado').value='';
   renderRelacionamentos(true);
+}
+function verInstalacoesMunicipio(codigoCod){
+  const codigo=decodeURIComponent(codigoCod);
+  document.getElementById('f_licenca').value='';
+  document.getElementById('f_municipio').value=codigo;
+  document.getElementById('f_estado').value='';
+  renderRelacionamentos(true);
+  document.getElementById('box-relacionamentos').scrollIntoView({behavior:'smooth',block:'start'});
 }
 
 async function criarLicenca(){
@@ -786,7 +801,7 @@ function renderInstalacoes(){
   const tb = document.getElementById('tab-inst'); tb.innerHTML='';
   const lista = _instalacoes.filter(i => !f ||
     String(i.instalacao_id).toLowerCase().includes(f) || String(i.codigo_ibge).toLowerCase().includes(f));
-  if (!lista.length){ tb.innerHTML='<tr><td colspan="6" class="vazio">'+(f?'Nada encontrado para o filtro.':'Nenhuma instalação autorizada ainda.')+'</td></tr>'; return; }
+  if (!lista.length){ tb.innerHTML='<tr><td colspan="7" class="vazio">'+(f?'Nada encontrado para o filtro.':'Nenhuma instalação autorizada ainda.')+'</td></tr>'; return; }
   for (const i of lista){
     const nomeEstado = i.status_instalacao || (i.revogada ? 'revogada' : 'ativa');
     const estado = tagStatus(nomeEstado);
@@ -800,7 +815,7 @@ function renderInstalacoes(){
     const tr=document.createElement('tr');
     const lic=_licencas.find(l=>String(l.licenca_id)===String(i.licenca_id));
     tr.innerHTML='<td class="cod">'+esc(i.instalacao_id)+'</td><td>'+esc(nomeMunicipio(lic))+'<br><span class="cod">'+esc(i.codigo_ibge)+'</span></td>'+
-      '<td><span class="cod">'+esc(i.licenca_id||'legado')+'</span><br>'+esc(lic?(lic.plano||'contratado'):'legado')+'</td><td>'+estado+'</td>'+
+      '<td><span class="cod">'+esc(i.licenca_id||'legado')+'</span><br>'+esc(lic?(lic.plano||'contratado'):'legado')+'</td><td>'+esc(i.ultima_versao_app||'—')+'</td><td>'+estado+'</td>'+
       '<td>'+esc(quando(i.criada_em))+'<br>'+esc(quando(i.ultima_consulta_em))+'</td><td style="text-align:right">'+acao+'</td>';
     tb.appendChild(tr);
   }
@@ -816,11 +831,11 @@ function renderMunicipios(codigos){
 }
 function renderTentativas(tent){
   const tt=document.getElementById('tab-tent'); tt.innerHTML='';
-  if (!tent.length){ tt.innerHTML='<tr><td colspan="4" class="vazio">Sem consultas registradas ainda.</td></tr>'; return; }
+  if (!tent.length){ tt.innerHTML='<tr><td colspan="5" class="vazio">Sem consultas registradas ainda.</td></tr>'; return; }
   for (const t of tent){
     const tr=document.createElement('tr');
     tr.innerHTML='<td>'+quando(t.quando)+'</td><td class="cod">'+esc(t.instalacao_id)+'</td>'+
-      '<td>'+esc(t.codigo_ibge)+'</td><td>'+tagStatus(t.status)+'</td>';
+      '<td>'+esc(t.codigo_ibge)+'</td><td>'+esc(t.versao_app||'—')+'</td><td>'+tagStatus(t.status)+'</td>';
     tt.appendChild(tr);
   }
 }

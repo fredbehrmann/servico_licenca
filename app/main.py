@@ -486,7 +486,8 @@ async def consulta(request: Request) -> JSONResponse:
     # Registro de tentativa (sem dado pessoal) e log resumido — nunca a assinatura.
     try:
         estado.repo.registrar_tentativa(
-            req["instalacao_id"], req["codigo_ibge"], resposta["status"], agora
+            req["instalacao_id"], req["codigo_ibge"], req["versao_app"],
+            resposta["status"], agora,
         )
     except Exception:
         _log.exception("falha ao registrar tentativa")
