@@ -123,7 +123,7 @@ def montar_estado() -> None:
     trial_ativo = _bool_env("LICENCA_TRIAL_ATIVO", False)
     versao_trial_minima = os.environ.get(
         "LICENCA_VERSAO_TRIAL_MINIMA", ""
-    ).strip() or "1.1.0"
+    ).strip() or "1.0.12"
     trial_dias = _int_env("LICENCA_TRIAL_DIAS", 30)
     trial_dias_offline = _int_env("LICENCA_TRIAL_DIAS_OFFLINE", 2)
     rate_max = _int_env("LICENCA_RATE_MAX", 12)

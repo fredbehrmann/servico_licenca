@@ -25,7 +25,7 @@ class Config:
     dias_validade: int = 365
     dias_offline: int = 7               # padrão do serviço; a licença carimba o prazo
     trial_ativo: bool = False
-    versao_trial_minima: str = "1.1.0"
+    versao_trial_minima: str = "1.0.12"
     trial_dias: int = 30
     trial_dias_offline: int = 2
 

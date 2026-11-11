@@ -55,7 +55,7 @@ class ConfiguracaoOperacional:
     recuperacao_dupla_aprovacao: bool = False
     oidc_configurado: bool = False
     trial_ativo: bool = False
-    versao_trial_minima: str = "1.1.0"
+    versao_trial_minima: str = "1.0.12"
     trial_dias: int = 30
     trial_dias_offline: int = 2
 

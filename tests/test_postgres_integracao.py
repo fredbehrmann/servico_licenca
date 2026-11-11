@@ -181,14 +181,14 @@ def test_postgres_emite_e_converte_trial_atomicamente(banco_postgres):
             "atualizado_em": _AGORA,
         })
         emitida = repo.emitir_trial_se_elegivel(
-            instalacao_id, _IBGE, _AGORA, 30, 2, "1.1.0",
+            instalacao_id, _IBGE, _AGORA, 30, 2, "1.0.12",
         )
         assert emitida is not None
         licenca_id = emitida["licenca"]["licenca_id"]
         assert emitida["licenca"]["plano"] == "trial"
         assert emitida["instalacao"]["licenca_id"] == licenca_id
         assert repo.emitir_trial_se_elegivel(
-            str(uuid.uuid4()), _IBGE, _AGORA, 30, 2, "1.1.0",
+            str(uuid.uuid4()), _IBGE, _AGORA, 30, 2, "1.0.12",
         ) is None
 
         convertida = repo.converter_trial(licenca_id, {

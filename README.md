@@ -93,7 +93,7 @@ Erros de entrada respondem 400/422 sem rastreamento. Uma falha interna imprevist
 | `LICENCA_DIAS_VALIDADE` | não | `365` | Compatibilidade temporária da allowlist antiga. Contratos novos usam `expira_em` fixo. |
 | `LICENCA_DIAS_OFFLINE` | não | `7` | Padrão legado. Cada contrato novo grava sua tolerância, que nunca ultrapassa `expira_em`. |
 | `LICENCA_TRIAL_ATIVO` | não | `false` | Chave geral de emissão. Desligar interrompe somente novos trials; os já emitidos preservam a vigência. |
-| `LICENCA_VERSAO_TRIAL_MINIMA` | não | `1.1.0` | Menor versão do SICOF que entende o campo assinado `plano` e a faixa de avaliação. |
+| `LICENCA_VERSAO_TRIAL_MINIMA` | não | `1.0.12` | Menor versão do SICOF que entende o campo assinado `plano` e a faixa de avaliação. |
 | `LICENCA_TRIAL_DIAS` | não | `30` | Vigência fixa de uma nova avaliação municipal. |
 | `LICENCA_TRIAL_DIAS_OFFLINE` | não | `2` | Tolerância off-line das licenças trial. |
 | `LICENCA_RATE_MAX` | não | `12` | Teto de consultas por instalação na janela. |

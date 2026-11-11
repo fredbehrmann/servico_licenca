@@ -24,7 +24,7 @@ def _habilitar_trial(c, main, *, maximo: int = 1) -> None:
     assert resposta.status_code == 200
 
 
-def _consulta(instalacao: str, versao: str = "1.1.0") -> dict:
+def _consulta(instalacao: str, versao: str = "1.0.12") -> dict:
     return {
         "instalacao_id": instalacao,
         "codigo_ibge": _IBGE,
